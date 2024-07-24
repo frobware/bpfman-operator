@@ -87,13 +87,8 @@ func TestBpfmanConfigReconcileAndDelete(t *testing.T) {
 	// Set development Logger so we can see all logs in tests.
 	logf.SetLogger(zap.New(zap.UseFlagOptions(&zap.Options{Development: true})))
 
-	// Create a ReconcileMemcached object with the scheme and fake
-	// client.
-	r := &BpfmanConfigReconciler{
-		ReconcilerCommon:         rc,
-		BpfmanStandardDeployment: staticDsPath,
-		CsiDriverDeployment:      staticCsiPath,
-	}
+	// Create a ReconcileMemcached object with the scheme and fake client.
+	r := &BpfmanConfigReconciler{ReconcilerCommon: rc, BpfmanStandardDeployment: staticDsPath, CsiDriverDeployment: staticCsiPath}
 
 	// Mock request to simulate Reconcile() being called on an event for a
 	// watched resource .
