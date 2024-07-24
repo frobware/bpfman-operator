@@ -302,13 +302,11 @@ func mustFindProjectRoot(currentDir string, isProjectRoot func(string) bool) str
 			return currentDir
 		}
 		if currentDir == filepath.Dir(currentDir) {
-			// Hit the root of the filesystem.
-			break
+			panic("project root not found")
 		}
 		// Move up to the parent directory.
 		currentDir = filepath.Dir(currentDir)
 	}
-	panic("project root not found")
 }
 
 // projectRootPredicate checks if the given directory is the project
