@@ -174,7 +174,7 @@ func TestBpfmanConfigReconcileAndDeleteOpenShift(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, res.Requeue)
 
-	// Refresh config map object.
+	// Refresh configmap.
 	err = client.Get(ctx, types.NamespacedName{Namespace: bpfmanConfig.Namespace, Name: bpfmanConfig.Name}, bpfmanConfig)
 	require.NoError(t, err)
 	require.NotNil(t, r.RestrictedSCC)
@@ -189,9 +189,8 @@ func TestBpfmanConfigReconcileAndDeleteOpenShift(t *testing.T) {
 	require.False(t, res.Requeue)
 
 	err = client.Get(ctx, types.NamespacedName{Namespace: corev1.NamespaceAll, Name: internal.BpfmanRestrictedSccName}, &osv1.SecurityContextConstraints{})
-	// require.True(t, errors.IsNotFound(err))
+	require.True(t, errors.IsNotFound(err))
 
-	// Refresh config map object.
 	err = client.Get(ctx, types.NamespacedName{Namespace: bpfmanConfig.Namespace, Name: bpfmanConfig.Name}, bpfmanConfig)
 	require.True(t, errors.IsNotFound(err))
 }
