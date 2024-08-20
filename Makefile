@@ -347,6 +347,18 @@ build-images: ## Build bpfman-agent and bpfman-operator images.
 	  $(if $(filter $(OCI_BIN),podman),--volume "$(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH):z") \
 	  -f Containerfile.bpfman-agent .
 
+.PHONY: build-supervisord-image
+build-supervisord-image: ## Build image for local bpfman development
+	# Generate a passwordless key.
+	$(RM) config/bpfman-supervisor/id_ed25519 config/bpfman-supervisor/id_ed25519.pub
+	ssh-keygen -t ed25519 -f config/bpfman-supervisor/id_ed25519 -N "" -q -f config/bpfman-supervisor/id_ed25519
+	chmod 400 config/bpfman-supervisor/id_ed25519 config/bpfman-supervisor/id_ed25519.pub
+	CGO_ENABLED=0 go build -o config/bpfman-supervisor/env-helper config/bpfman-supervisor/env-helper.go
+	$(OCI_BIN) buildx build --load -t docker.io/library/bpfman-supervisor:0.0.42 \
+		--build-arg USER_NAME=$(USER) \
+		--build-arg USER_NAME_SHELL=$(shell echo $$SHELL) \
+		-f Containerfile.supervisor .
+
 .PHONY: push-images
 push-images: ## Push bpfman-agent and bpfman-operator images.
 	$(OCI_BIN) push ${BPFMAN_OPERATOR_IMG}
@@ -354,8 +366,29 @@ push-images: ## Push bpfman-agent and bpfman-operator images.
 	$(OCI_BIN) push ${BPFMAN_IMG}
 
 .PHONY: load-images-kind
-load-images-kind: ## Load bpfman-agent, and bpfman-operator images into the running local kind devel cluster.
-	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} ${BPFMAN_OPERATOR_IMG} ${BPFMAN_AGENT_IMG}
+# Function to check if an image exists locally using podman or docker.
+image_exists = \
+  if [ "$(OCI_BIN)" = "podman" ]; then \
+    podman image exists $(1); \
+  elif [ "$(OCI_BIN)" = "docker" ]; then \
+    docker image inspect $(1) > /dev/null 2>&1; \
+  else \
+    echo "Unsupported OCI_BIN value: $(OCI_BIN). Use 'podman' or 'docker'."; \
+    exit 1; \
+  fi
+
+.PHONY: load-images-kind
+load-images-kind: ## Load bpfman, bpfman-agent, and bpfman-operator images into the running local kind devel cluster.
+	@set -e; \
+	images="$$BPFMAN_OPERATOR_IMG $$BPFMAN_AGENT_IMG"; \
+	for img in $$images; do \
+	  if $(call image_exists,$$img); then \
+	    echo "Loading image $$img into kind cluster ${KIND_CLUSTER_NAME}"; \
+	    ./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} $$img; \
+	  else \
+	    echo "Image $$img does not exist locally, skipping."; \
+	  fi; \
+	done
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
@@ -425,6 +458,15 @@ deploy: manifests kustomize ## Deploy bpfman-operator to the K8s cluster specifi
 		  kustomization.yaml.env > kustomization.yaml
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 
+## Default development target is KIND based with its CSI driver initialized.
+.PHONY: deploy-supervisor
+deploy-supervisor: build-supervisord-image manifests kustomize ## Deploy bpfman-operator to the K8s cluster specified in ~/.kube/config with the csi driver initialized.
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} docker.io/library/bpfman-supervisor:0.0.42
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	$(KUSTOMIZE) build config/supervisor | kubectl apply -f -
+	kubectl delete --ignore-not-found=$(ignore-not-found) -f config/bpfman-supervisor/manifests
+	kubectl apply -f config/bpfman-supervisor/manifests
+
 .PHONY: undeploy
 undeploy: ## Undeploy bpfman-operator from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	kubectl delete --ignore-not-found=$(ignore-not-found) cm bpfman-config -n bpfman
@@ -436,8 +478,57 @@ kind-reload-images: load-images-kind ## Reload locally build images into a kind 
 	kubectl rollout restart daemonset bpfman-daemon -n bpfman
 	kubectl rollout restart deployment bpfman-operator -n bpfman
 
+.PHONY: kind-reload-supervisord-image
+kind-reload-supervisord-image: build-supervisord-image
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} docker.io/library/bpfman-supervisor:0.0.42
+	kubectl rollout restart daemonset bpfman-daemon -n bpfman
+
 .PHONY: run-on-kind
 run-on-kind: kustomize setup-kind build-images load-images-kind deploy ## Kind Deploy runs the bpfman-operator on a local kind cluster using local builds of bpfman, bpfman-agent, and bpfman-operator
+
+.PHONY: dev-on-kind
+dev-on-kind: kustomize build-supervisor-kind-configs setup-kind build-images load-images-kind deploy-supervisor
+
+.PHONY: build-supervisor-kind-configs
+build-supervisor-kind-configs:
+	./hack/kind-gen-mount-config.sh kind > hack/kind-config.yaml
+	./hack/kind-gen-mount-config.sh daemonset > config/bpfman-supervisor/home-dir.yaml
+
+.PHONY: dev-login
+dev-login:
+	ssh -F config/bpfman-supervisor/ssh_config container
+
+SERVICE_FILES := $(wildcard config/bpfman-supervisor/*.service)
+SYSTEMD_DIR   := $(HOME)/.config/systemd/user
+
+install-port-forward-services: | $(SYSTEMD_DIR)
+	for service in $(SERVICE_FILES); do \
+		install -m 644 $$service $(SYSTEMD_DIR)/$$(basename $$service); \
+		systemctl --user daemon-reload; \
+		systemctl --user enable --now $$(basename $$service); \
+	done
+
+uninstall-port-forward-services:
+	for service in $(SERVICE_FILES); do \
+		systemctl --user stop $$(basename $$service); \
+		systemctl --user disable $$(basename $$service); \
+		$(RM) $(SYSTEMD_DIR)/$$(basename $$service); \
+		systemctl --user daemon-reload; \
+	done
+
+restart-port-forward-services:
+	@for service in $(SERVICE_FILES); do \
+		service_name=$$(basename $$service); \
+		systemctl --user restart $$service_name; \
+		if systemctl --user is-active $$service_name --quiet; then \
+			echo "$$service_name is running."; \
+		else \
+			echo "$$service_name failed to start."; \
+		fi; \
+	done
+
+$(SYSTEMD_DIR):
+	@mkdir -p $@
 
 ##@ Openshift Deployment
 
