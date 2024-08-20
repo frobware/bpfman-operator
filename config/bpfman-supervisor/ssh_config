@@ -1,0 +1,11 @@
+Host container
+     CheckHostIP no
+     GSSAPIAuthentication no
+     GSSAPIDelegateCredentials no
+     HashKnownHosts no
+     Hostname 127.0.0.1
+     IdentitiesOnly yes
+     IdentityFile config/bpfman-supervisor/id_ed25519
+     Port 2223
+     StrictHostKeyChecking no
+     UserKnownHostsFile /dev/null

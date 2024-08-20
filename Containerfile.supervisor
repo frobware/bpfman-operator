@@ -1,0 +1,42 @@
+FROM quay.io/fedora/fedora:40
+
+# Build-time variables.
+ARG CLEAN_DNF_CACHE=false
+ARG DNF_UPDATE=false
+ARG USERNAME
+ARG USERNAME_SHELL=/usr/bin/zsh
+
+RUN INSTALL_PKGS="procps-ng lsof strace rsync wget supervisor openssh-server sudo which direnv glibc-langpack-en zsh shadow-utils util-linux-user hostname" && \
+    [ "$DNF_UPDATE" = "true" ] && dnf update -y || echo "Skipping dnf update" && \
+    dnf install -y $INSTALL_PKGS $HAPROXY_RPMS && \
+    [ "$CLEAN_DNF_CACHE" = "true" ] && dnf clean all || echo "Skipping dnf clean all"
+
+RUN groupadd -g 1000 $USERNAME && \
+    useradd -M -g $USERNAME $USERNAME -s $USERNAME_SHELL && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+RUN echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
+    echo "Port 2223" >> /etc/ssh/sshd_config && \
+    echo "Match User root" >> /etc/ssh/sshd_config && \
+    echo "  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u" >> /etc/ssh/sshd_config && \
+    echo "Match User $USERNAME" >> /etc/ssh/sshd_config && \
+    echo "  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u" >> /etc/ssh/sshd_config && \
+    ssh-keygen -A && \
+    mkdir -p /etc/ssh/authorized_keys.d
+
+COPY config/bpfman-supervisor/id_ed25519.pub /etc/ssh/authorized_keys.d/root
+COPY config/bpfman-supervisor/id_ed25519.pub /etc/ssh/authorized_keys.d/$USERNAME
+
+RUN chmod 755 /etc/ssh/authorized_keys.d && \
+    chmod 444 /etc/ssh/authorized_keys.d/root /etc/ssh/authorized_keys.d/$USERNAME
+
+# Modify sudoers to keep all environment variables.
+RUN sed -i 's/^Defaults.*env_reset/#&/' /etc/sudoers && \
+    echo 'Defaults env_keep = "*"' >> /etc/sudoers
+
+COPY config/bpfman-supervisor/supervisord.conf /etc/supervisord.conf
+COPY config/bpfman-supervisor/env-helper /env-helper
+
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
