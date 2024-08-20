@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: daemon
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: bpfman-supervisor
+        volumeMounts:
+        - name: home-dir
+          mountPath: /home/aim
+        - name: nix-default-profile
+          mountPath: /nix/var/nix/profiles/default
+        - name: nix-user-profile
+          mountPath: /home/aim/.nix-profile
+        - name: nix-store
+          mountPath: /nix/store
+          readOnly: true
+      volumes:
+      - name: home-dir
+        hostPath:
+          path: /home/aim
+          type: Directory
+      - name: nix-default-profile
+        hostPath:
+          path: /nix/var/nix/profiles/default
+          type: Directory
+      - name: nix-user-profile
+        hostPath:
+          path: /home/aim/.nix-profile
+          type: Directory
+      - name: nix-store
+        hostPath:
+          path: /nix/store
+          type: Directory

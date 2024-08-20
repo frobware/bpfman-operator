@@ -1,0 +1,9 @@
+resources:
+- config.yaml
+- daemonset.yaml
+- csidriverinfo.yaml
+- role-binding.yaml
+- role.yaml
+
+patchesStrategicMerge:
+- project-dir.yaml

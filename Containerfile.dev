@@ -1,0 +1,52 @@
+FROM quay.io/fedora/fedora:40
+
+# Build-time variables
+ARG GITHUB_USER=frobware
+ARG CLEAN_DNF_CACHE=false
+ARG DNF_UPDATE=false
+
+RUN INSTALL_PKGS="procps-ng lsof strace rsync wget supervisor openssh-server golang sudo which direnv glibc-langpack-en zsh shadow-utils util-linux-user hostname" && \
+    [ "$DNF_UPDATE" = "true" ] && dnf update -y || echo "Skipping dnf update" && \
+    dnf install -y $INSTALL_PKGS $HAPROXY_RPMS && \
+    [ "$CLEAN_DNF_CACHE" = "true" ] && dnf clean all || echo "Skipping dnf clean all"
+
+# Create a new user with UID and GID 1000.
+RUN groupadd -g 1000 aim && \
+    useradd -M -g aim aim -s /usr/bin/zsh && \
+    echo "aim ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Modify sudoers to keep all environment variables
+RUN sed -i 's/^Defaults.*env_reset/#&/' /etc/sudoers && \
+    echo 'Defaults env_keep = "*"' >> /etc/sudoers
+
+RUN echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
+    echo "Port 2222" >> /etc/ssh/sshd_config && \
+    echo "Match User root" >> /etc/ssh/sshd_config && \
+    echo "  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u" >> /etc/ssh/sshd_config && \
+    ssh-keygen -A && \
+    mkdir -p /etc/ssh/authorized_keys.d
+
+RUN curl -s https://github.com/${GITHUB_USER}.keys -o /etc/ssh/authorized_keys.d/root && \
+    cp /etc/ssh/authorized_keys.d/root /etc/ssh/authorized_keys.d/aim && \
+    chmod 755 /etc/ssh/authorized_keys.d && \
+    chmod 444 /etc/ssh/authorized_keys.d/root /etc/ssh/authorized_keys.d/aim && \
+    chown aim:aim /etc/ssh/authorized_keys.d/aim
+
+# Configure Rust to use mold for the bpfman user.
+# RUN mkdir -p /home/bpfman/.cargo && \
+#     echo '[target.x86_64-unknown-linux-gnu]' > /home/bpfman/.cargo/config.toml && \
+#     echo 'linker = "clang"' >> /home/bpfman/.cargo/config.toml && \
+#     echo 'rustflags = ["-C", "link-arg=-fuse-ld=/usr/bin/mold"]' >> /home/bpfman/.cargo/config.toml && \
+#     chown -R bpfman:bpfman /home/bpfman/.cargo
+
+# Set environment variable for mold.
+# RUN echo 'export RUSTFLAGS="-C link-arg=-fuse-ld=/usr/bin/mold"' >> /home/bpfman/.bashrc && \
+#     chown bpfman:bpfman /home/bpfman/.bashrc
+
+RUN mkdir -p /var/log/supervisor /etc/supervisor
+COPY config/bpfman-dev/supervisord.conf /etc/supervisor/supervisord.conf
+COPY env-helper /env-helper
+
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: daemon
+  namespace: bpfman
+  labels:
+    k8s-app: bpfman
+  annotations:
+    deprecated.daemonset.template.generation: "2"
+  finalizers:
+    - bpfman.io.operator/finalizer
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      name: bpfman-daemon
+  template:
+    metadata:
+      annotations:
+        bpfman.io.bpfman.agent.healthprobeaddr: :8175
+        bpfman.io.bpfman.agent.loglevel: info
+        bpfman.io.bpfman.agent.metricaddr: 127.0.0.1:8174
+        bpfman.io.bpfman.loglevel: info
+      labels:
+        name: bpfman-daemon
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: bpfman-daemon
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 2000
+      containers:
+        - name: bpfman-supervisor
+          image: quay.io/bpfman/bpfman-dev:latest
+          securityContext:
+            privileged: true
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUST_LOG
+              valueFrom:
+                configMapKeyRef:
+                  name: bpfman-config
+                  key: bpfman.log.level
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - name: bpfman-sock
+              mountPath: /run/bpfman-sock
+            - name: runtime
+              mountPath: /run/bpfman
+              mountPropagation: Bidirectional
+            - name: host-debug
+              mountPath: /sys/kernel/debug
+            - name: bpfman-content-store
+              mountPath: /var/lib/bpfman
+              mountPropagation: Bidirectional
+            - name: default-bpf-fs
+              mountPath: /sys/fs/bpf
+              mountPropagation: Bidirectional
+            - mountPath: /run/bpfman/csi
+              name: socket-dir
+            - mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+              name: mountpoint-dir
+            - mountPath: /tmp
+              name: tmp-dir
+            - mountPath: /host/proc
+              name: host-proc
+            - mountPath: /run/containerd/containerd.sock
+              name: host-containerd
+            - mountPath: /run/crio/crio.sock
+              name: host-crio
+            - mountPath: /var/run/dockershim.sock
+              name: host-dockershim
+            - mountPath: /var/run/cri-dockerd.sock
+              name: host-dockerd
+            - mountPath: /etc/crictl.yaml
+              name: host-crictl-config
+            - name: bpfman-config
+              mountPath: /etc/bpfman/bpfman.toml
+              subPath: bpfman.toml
+              readOnly: true
+        - name: node-driver-registrar
+          image: quay.io/bpfman/csi-node-driver-registrar:v2.9.0
+          imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - rm -rf /registration/csi-bpfman /registration/csi-bpfman-reg.sock
+          args:
+            - --v=5
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/csi-bpfman/csi.sock
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /registration
+              name: registration-dir
+      initContainers:
+        - name: mount-bpffs
+          image: quay.io/fedora/fedora-minimal:39
+          command:
+            - /bin/sh
+            - -xc
+            - |
+              #!/bin/sh
+              if ! /bin/mount | /bin/grep -q 'bpffs on /sys/fs/bpf'; then
+                /bin/mount bpffs /sys/fs/bpf -t bpf
+              fi
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            capabilities:
+              add: [CAP_BPF, CAP_NET_ADMIN]
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: FallbackToLogsOnError
+          volumeMounts:
+            - name: default-bpf-fs
+              mountPath: /sys/fs/bpf
+              mountPropagation: Bidirectional
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 15
+      volumes:
+        - name: bpfman-sock
+          emptyDir: {}
+        - name: runtime
+          hostPath:
+            path: /run/bpfman
+        - name: bpfman-config
+          configMap:
+            name: bpfman-config
+            optional: false
+        - name: host-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: bpfman-content-store
+          hostPath:
+            path: /var/lib/bpfman
+        - name: default-bpf-fs
+          hostPath:
+            path: /sys/fs/bpf
+          # Removed "type: DirectoryOrCreate" field
+        - hostPath:
+            path: /var/lib/kubelet/plugins/csi-bpfman
+          name: socket-dir
+        - hostPath:
+            path: /var/lib/kubelet/pods
+          name: mountpoint-dir
+        - hostPath:
+            path: /var/lib/kubelet/plugins_registry
+          name: registration-dir
+        - hostPath:
+            path: /tmp
+          name: tmp-dir
+        - hostPath:
+            path: /proc
+          name: host-proc
+        - hostPath:
+            path: /run/containerd/containerd.sock
+          name: host-containerd
+        - hostPath:
+            path: /run/crio/crio.sock
+          name: host-crio
+        - hostPath:
+            path: /var/run/dockershim.sock
+          name: host-dockershim
+        - hostPath:
+            path: /var/run/cri-dockerd.sock
+          name: host-dockerd
+        - hostPath:
+            path: /etc/crictl.yaml
+          name: host-crictl-config
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate

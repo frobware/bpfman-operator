@@ -2,3 +2,12 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    extraMounts:
+    - hostPath: /home/aim
+      containerPath: /home/aim
+    - hostPath: /nix/var/nix/profiles/default
+      containerPath: /nix/var/nix/profiles/default
+    - hostPath: /home/aim/.nix-profile
+      containerPath: /home/aim/.nix-profile
+    - hostPath: /nix/store
+      containerPath: /nix/store

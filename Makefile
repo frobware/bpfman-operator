@@ -347,6 +347,10 @@ build-images: ## Build bpfman-agent and bpfman-operator images.
 	  $(if $(filter $(OCI_BIN),podman),--volume "$(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH):z") \
 	  -f Containerfile.bpfman-agent .
 
+.PHONY: build-dev-image
+build-dev-image: ## Build image for local development
+	$(OCI_BIN) build -f Containerfile.dev -t bpfman-dev:0.1.0 .
+
 .PHONY: push-images
 push-images: ## Push bpfman-agent and bpfman-operator images.
 	$(OCI_BIN) push ${BPFMAN_OPERATOR_IMG}
@@ -446,16 +450,28 @@ deploy: manifests kustomize ## Deploy bpfman-operator to the K8s cluster specifi
 		  kustomization.yaml.env > kustomization.yaml
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 
+## Default development target is KIND based with its CSI driver initialized.
+.PHONY: deploy-dev
+deploy-dev: build-dev-image manifests kustomize ## Deploy bpfman-operator to the K8s cluster specified in ~/.kube/config with the csi driver initialized.
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} localhost/bpfman-dev:0.1.0
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	$(KUSTOMIZE) build config/dev | kubectl apply -f -
+
 .PHONY: undeploy
 undeploy: ## Undeploy bpfman-operator from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	kubectl delete --ignore-not-found=$(ignore-not-found) cm bpfman-config -n bpfman
 	sleep 5 # Wait for the operator to cleanup the daemonset
-	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/dev | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: kind-reload-images
 kind-reload-images: load-images-kind ## Reload locally build images into a kind cluster and restart the ds and deployment so they're picked up.
 	kubectl rollout restart daemonset bpfman-daemon -n bpfman
 	kubectl rollout restart deployment bpfman-operator -n bpfman
+
+.PHONY: kind-reload-dev-image
+kind-reload-dev-image: build-dev-image
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} localhost/bpfman-dev:0.1.0
+	kubectl rollout restart daemonset bpfman-daemon -n bpfman
 
 .PHONY: run-on-kind
 run-on-kind: kustomize setup-kind build-images load-images-kind deploy ## Kind Deploy runs the bpfman-operator on a local kind cluster using local builds of bpfman, bpfman-agent, and bpfman-operator
