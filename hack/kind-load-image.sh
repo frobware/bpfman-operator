@@ -64,15 +64,29 @@ counter=1
 for image_reference in "$@"; do
     tar_file="$tmp_dir/image-$counter.tar"
 
-    if [ $verbose -eq 1 ]; then
-        echo "$OCI_BIN save $save_args --output \"$tar_file\" \"$image_reference\""
-    fi
-    "$OCI_BIN" save $save_args --output "$tar_file" "$image_reference"
+    if [ "$OCI_BIN" = "docker" ]; then
+        # Optimised loading for Docker
+        if [ $verbose -eq 1 ]; then
+            echo "$OCI_BIN pull \"$image_reference\""
+        fi
+        "$OCI_BIN" pull "$image_reference"
 
-    if [ $verbose -eq 1 ]; then
-        echo "kind load image-archive --name \"$kind_cluster_name\" \"$tar_file\""
+        if [ $verbose -eq 1 ]; then
+            echo "kind load docker-image --name \"$kind_cluster_name\" \"$image_reference\""
+        fi
+        kind load docker-image --name "$kind_cluster_name" "$image_reference"
+    else
+        # Handle other OCI_BIN cases (e.g., Podman)
+        if [ $verbose -eq 1 ]; then
+            echo "$OCI_BIN save $save_args --output \"$tar_file\" \"$image_reference\""
+        fi
+        "$OCI_BIN" save $save_args --output "$tar_file" "$image_reference"
+
+        if [ $verbose -eq 1 ]; then
+            echo "kind load image-archive --name \"$kind_cluster_name\" \"$tar_file\""
+        fi
+        kind load image-archive --name "$kind_cluster_name" "$tar_file"
     fi
-    kind load image-archive --name "$kind_cluster_name" "$tar_file"
 
     counter=$((counter + 1))
 done
