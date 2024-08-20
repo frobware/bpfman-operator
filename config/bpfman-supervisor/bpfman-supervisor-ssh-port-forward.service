@@ -1,0 +1,13 @@
+[Unit]
+Description=bpfman persistent port-forward service for port 2223 (SSH)
+After=network.target
+
+[Service]
+RestartSec=3
+Restart=always
+ExecStart=kubectl port-forward -n bpfman daemonset/bpfman-daemon --address 127.0.0.1 2223:2223
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
