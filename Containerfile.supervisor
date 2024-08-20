@@ -1,0 +1,65 @@
+FROM quay.io/fedora/fedora:40
+
+# Build-time variables.
+ARG DNF_CLEAN_CACHE=false
+ARG DNF_UPDATE=false
+
+ARG USER_NAME
+ARG USER_NAME_SHELL
+
+RUN INSTALL_PKGS="\
+    bash \
+    cargo \
+    direnv \
+    gdb \
+    glibc-langpack-en \
+    lldb \
+    lsof \
+    openssh-server \
+    openssl-devel \
+    procps-ng \
+    rust-gdb \
+    rust-src \
+    shadow-utils \
+    strace \
+    sudo \
+    supervisor \
+    util-linux-user \
+    wget \
+    which \
+    zlib-devel \
+    zsh \
+    " && \
+    [ "$DNF_UPDATE" = "true" ] && dnf update -y || echo "Skipping dnf update" && \
+    dnf install -y $INSTALL_PKGS && \
+    [ "$DNF_CLEAN_CACHE" = "true" ] && dnf clean all || echo "Skipping dnf clean all"
+
+RUN groupadd -g 1000 $USER_NAME && \
+    useradd -M -g $USER_NAME $USER_NAME -s $USER_NAME_SHELL && \
+    echo "$USER_NAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+RUN echo "AllowAgentForwarding no" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config && \
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
+    echo "Port 2223" >> /etc/ssh/sshd_config && \
+    echo "Match User root" >> /etc/ssh/sshd_config && \
+    echo "  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u" >> /etc/ssh/sshd_config && \
+    echo "Match User $USER_NAME" >> /etc/ssh/sshd_config && \
+    echo "  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u" >> /etc/ssh/sshd_config && \
+    ssh-keygen -A && \
+    mkdir -p /etc/ssh/authorized_keys.d
+
+COPY config/bpfman-supervisor/id_ed25519.pub /etc/ssh/authorized_keys.d/root
+COPY config/bpfman-supervisor/id_ed25519.pub /etc/ssh/authorized_keys.d/$USER_NAME
+
+RUN chmod 755 /etc/ssh/authorized_keys.d && \
+    chmod 444 /etc/ssh/authorized_keys.d/root /etc/ssh/authorized_keys.d/$USER_NAME
+
+# Modify sudoers to keep all environment variables.
+RUN sed -i 's/^Defaults.*env_reset/#&/' /etc/sudoers && \
+    echo 'Defaults env_keep = "*"' >> /etc/sudoers
+
+COPY config/bpfman-supervisor/supervisord.conf /supervisord.conf
+COPY config/bpfman-supervisor/env-helper /env-helper
+
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/supervisord.conf"]
