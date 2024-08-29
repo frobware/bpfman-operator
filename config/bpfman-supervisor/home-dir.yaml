@@ -13,8 +13,10 @@ spec:
           mountPath: /home/${USER}
         - name: nix-default-profile
           mountPath: /nix/var/nix/profiles/default
+          readOnly: true
         - name: nix-user-profile
           mountPath: /home/${USER}/.nix-profile
+          readOnly: true
         - name: nix-store
           mountPath: /nix/store
           readOnly: true

@@ -355,7 +355,7 @@ build-dev-image: ## Build image for local bpfman development
 	ssh-keygen -t ed25519 -f config/bpfman-supervisor/id_ed25519 -N "" -q -f config/bpfman-supervisor/id_ed25519
 	chmod 400 config/bpfman-supervisor/id_ed25519 config/bpfman-supervisor/id_ed25519.pub
 	CGO_ENABLED=0 go build -o config/bpfman-supervisor/env-helper config/bpfman-supervisor/env-helper.go
-	$(OCI_BIN) buildx build --load -t bpfman-supervisor:0.0.42 \
+	$(OCI_BIN) buildx build --load -t docker.io/library/bpfman-supervisor:0.0.42 \
 		--build-arg USER_NAME=$(USER) \
 		--build-arg USER_NAME_SHELL=$(shell echo $$SHELL) \
 		-f Containerfile.supervisor .
@@ -468,7 +468,7 @@ deploy: manifests kustomize ## Deploy bpfman-operator to the K8s cluster specifi
 ## Default development target is KIND based with its CSI driver initialized.
 .PHONY: deploy-supervisor
 deploy-supervisor: build-dev-image manifests kustomize ## Deploy bpfman-operator to the K8s cluster specified in ~/.kube/config with the csi driver initialized.
-	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} localhost/bpfman-supervisor:0.0.42
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} docker.io/library/bpfman-supervisor:0.0.42
 	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
 	$(KUSTOMIZE) build config/supervisor | envsubst | kubectl apply -f -
 
@@ -485,7 +485,7 @@ kind-reload-images: load-images-kind ## Reload locally build images into a kind 
 
 .PHONY: kind-reload-dev-image
 kind-reload-dev-image: build-dev-image
-	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} localhost/bpfman-supervisor:0.0.42
+	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} docker.io/library/bpfman-supervisor:0.0.42
 	kubectl rollout restart daemonset bpfman-daemon -n bpfman
 
 .PHONY: run-on-kind

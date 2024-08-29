@@ -32,10 +32,10 @@ spec:
         fsGroup: 2000
       containers:
         - name: bpfman-supervisor
-          image: localhost/bpfman-supervisor:0.0.42
+          image: docker.io/library/bpfman-supervisor:0.0.42
           securityContext:
             privileged: true
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           env:
             - name: RUST_LOG
               valueFrom:
