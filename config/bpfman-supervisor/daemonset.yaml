@@ -85,6 +85,41 @@ spec:
               mountPath: /etc/bpfman/bpfman.toml
               subPath: bpfman.toml
               readOnly: true
+        - name: bpfman-agent
+          command: [/bpfman-agent]
+          args:
+            - --health-probe-bind-address=:8175
+            - --metrics-bind-address=127.0.0.1:8174
+            - --profiling-bind-address=:6060
+          image: quay.io/bpfman/bpfman-agent:latest
+          securityContext:
+            privileged: true
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: GO_LOG
+              valueFrom:
+                configMapKeyRef:
+                  name: bpfman-config
+                  key: bpfman.agent.log.level
+          volumeMounts:
+            - name: bpfman-sock
+              mountPath: /run/bpfman-sock
+            ## The following five mounts are used by crictl for attaching
+            ## uprobes in user containers
+            - mountPath: /run/containerd/containerd.sock
+              name: host-containerd
+            - mountPath: /run/crio/crio.sock
+              name: host-crio
+            - mountPath: /var/run/dockershim.sock
+              name: host-dockershim
+            - mountPath: /var/run/cri-dockerd.sock
+              name: host-dockerd
+            - mountPath: /etc/crictl.yaml
+              name: host-crictl-config
         - name: node-driver-registrar
           image: quay.io/bpfman/csi-node-driver-registrar:v2.9.0
           imagePullPolicy: IfNotPresent
