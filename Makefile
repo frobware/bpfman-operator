@@ -381,7 +381,7 @@ image_exists = \
 .PHONY: load-images-kind
 load-images-kind: ## Load bpfman, bpfman-agent, and bpfman-operator images into the running local kind devel cluster.
 	@set -e; \
-	images="$$BPFMAN_OPERATOR_IMG $$BPFMAN_AGENT_IMG $$BPFMAN_IMG"; \
+	images="$$BPFMAN_OPERATOR_IMG $$BPFMAN_AGENT_IMG"; \
 	for img in $$images; do \
 	  if $(call image_exists,$$img); then \
 	    echo "Loading image $$img into kind cluster ${KIND_CLUSTER_NAME}"; \
@@ -492,7 +492,7 @@ kind-reload-dev-image: build-dev-image
 run-on-kind: kustomize setup-kind build-images load-images-kind deploy ## Kind Deploy runs the bpfman-operator on a local kind cluster using local builds of bpfman, bpfman-agent, and bpfman-operator
 
 .PHONY: dev-on-kind
-dev-on-kind: kustomize setup-kind deploy-supervisor
+dev-on-kind: kustomize setup-kind build-images load-images-kind deploy-supervisor
 
 .PHONY: dev-login
 dev-login:
