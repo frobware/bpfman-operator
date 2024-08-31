@@ -11,3 +11,5 @@ nodes:
       containerPath: /home/${USER}/.nix-profile
     - hostPath: /nix/store
       containerPath: /nix/store
+    - hostPath: /run/user/1000
+      containerPath: /run/user/1000

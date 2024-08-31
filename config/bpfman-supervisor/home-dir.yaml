@@ -20,6 +20,8 @@ spec:
         - name: nix-store
           mountPath: /nix/store
           readOnly: true
+        - name: run-user-1000
+          mountPath: /run/user/1000
       volumes:
       - name: home-dir
         hostPath:
@@ -36,4 +38,8 @@ spec:
       - name: nix-store
         hostPath:
           path: /nix/store
+          type: Directory
+      - name: run-user-1000
+        hostPath:
+          path: /run/user/1000
           type: Directory
