@@ -443,13 +443,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: setup-kind
 setup-kind: ## Setup Kind cluster
-	@kind delete cluster --name ${KIND_CLUSTER_NAME}
-	@temp_file=$(shell mktemp) && \
-	envsubst < $(KIND_CONFIG) > $$temp_file && \
-	kind_create_cmd="kind create cluster --config $$temp_file --name ${KIND_CLUSTER_NAME}" && \
-	echo $$kind_create_cmd && \
-	$$kind_create_cmd && \
-	rm -f $$temp_file
+	kind delete cluster --name ${KIND_CLUSTER_NAME} && kind create cluster --config hack/kind-config.yaml --name ${KIND_CLUSTER_NAME}
 
 .PHONY: destroy-kind
 destroy-kind: ## Destroy Kind cluster
@@ -492,7 +486,12 @@ kind-reload-dev-image: build-dev-image
 run-on-kind: kustomize setup-kind build-images load-images-kind deploy ## Kind Deploy runs the bpfman-operator on a local kind cluster using local builds of bpfman, bpfman-agent, and bpfman-operator
 
 .PHONY: dev-on-kind
-dev-on-kind: kustomize setup-kind build-images load-images-kind deploy-supervisor
+dev-on-kind: kustomize build-supervisor-kind-configs setup-kind build-images load-images-kind deploy-supervisor
+
+.PHONY: build-supervisor-kind-configs
+build-supervisor-kind-configs:
+	./hack/kind-gen-mount-config.sh kind > hack/kind-config.yaml
+	./hack/kind-gen-mount-config.sh daemonset > config/bpfman-supervisor/home-dir.yaml
 
 .PHONY: dev-login
 dev-login:
