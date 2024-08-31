@@ -47,6 +47,7 @@ process_and_add_path() {
     fi
 }
 
+
 # Main function to generate either kind or daemonset configuration.
 generate_config() {
     local mode="$1"
@@ -55,18 +56,38 @@ generate_config() {
 
     # Default paths to check with mount options.
     local user_id_path="/run/user/$(id -u)"
-    local paths_to_check=(
-        "/nix/store:ro"
-        "/etc/profiles:ro"
-        "/etc/static:ro"
-        "$user_id_path:rw"
-        "$HOME:rw"
+    local paths_to_check=()
+
+    # Static paths with their mount options
+    declare -A static_paths=(
+        ["/nix/store"]="ro"
+        ["/etc/profiles"]="ro"
+        ["/etc/static"]="ro"
+        ["$user_id_path"]="rw"
+        ["$HOME"]="rw"
     )
+
+    # Add static paths only if they exist
+    for path in "${!static_paths[@]}"; do
+        if [ -e "$path" ]; then
+            paths_to_check+=("$path:${static_paths[$path]}")
+        else
+            if [ "$verbose" = true ]; then
+                echo "Skipping non-existent path: $path" >&2
+            fi
+        fi
+    done
 
     # Add paths from NIX_PROFILES as read-only.
     if [ -n "$NIX_PROFILES" ]; then
         for profile_path in $NIX_PROFILES; do
-            paths_to_check+=("$profile_path:ro")
+            if [ -e "$profile_path" ]; then
+                paths_to_check+=("$profile_path:ro")
+            else
+                if [ "$verbose" = true ]; then
+                    echo "Skipping non-existent NIX profile path: $profile_path" >&2
+                fi
+            fi
         done
     fi
 
@@ -82,6 +103,9 @@ generate_config() {
         IFS=":" read -r path option <<< "$path_option"
         process_and_add_path "$path" "$option" volume_args
     done
+
+    # Sort and remove duplicates from the volume_args array.
+    volume_args=($(printf "%s\n" "${volume_args[@]}" | sort | uniq))
 
     if [ "$mode" == "kind" ]; then
         # KIND configuration output
