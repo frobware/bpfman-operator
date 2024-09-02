@@ -63,7 +63,8 @@ generate_config() {
     local volume_args=()
 
     # Default paths to check with mount options.
-    local user_id_path="/run/user/$(id -u)"
+    local user_id_path
+    user_id_path="/run/user/$(id -u)"
     local paths_to_check=()
 
     # Static paths with their mount options
@@ -113,7 +114,7 @@ generate_config() {
     done
 
     # Sort and remove duplicates from the volume_args array.
-    volume_args=($(printf "%s\n" "${volume_args[@]}" | sort | uniq))
+    mapfile -t volume_args < <(printf "%s\n" "${volume_args[@]}" | sort | uniq)
 
     if [ "$mode" == "kind" ]; then
         # KIND configuration output
@@ -148,7 +149,7 @@ spec:
       - name: bpfman-supervisor
         env:
         - name: KIND_HOST_PATH
-          value: "$(echo $PATH)"
+          value: "$PATH"
         volumeMounts:
 EOF
 
