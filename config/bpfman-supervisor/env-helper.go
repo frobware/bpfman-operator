@@ -59,9 +59,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Write the kind-host-path.sh script to /etc/profile.d
+	// Write the kind-host-path.sh script to /etc/profile.d.
 	if err := writeKindHostPathScript(envDir); err != nil {
 		fmt.Printf("Error writing kind-host-path.sh: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Generate and write the Kubernetes environment variables once
+	kubeEnvFilePath := filepath.Join(envDir, "kube.sh")
+	if err := writeKubeEnvFile(kubeEnvFilePath, clientset); err != nil {
+		fmt.Printf("Error writing kube.sh: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -159,7 +166,6 @@ func writeEnvFileFromDeployment(deployment *v1.Deployment, event, envFilePath st
 	envFileContent := extractEnvVarsFromDeployment(deployment, clientset)
 
 	if envFileContent == lastDeploymentEnvContent {
-		// fmt.Printf("No changes in environment variables. Skipping file write. Event: %s\n", event)
 		return
 	}
 
@@ -177,7 +183,6 @@ func writeEnvFileFromDaemonSet(daemonSet *v1.DaemonSet, event, envFilePath strin
 	envFileContent := extractEnvVarsFromDaemonSet(daemonSet, clientset)
 
 	if envFileContent == lastDaemonSetEnvContent {
-		// fmt.Printf("No changes in environment variables. Skipping file write. Event: %s\n", event)
 		return
 	}
 
@@ -191,22 +196,58 @@ func writeEnvFileFromDaemonSet(daemonSet *v1.DaemonSet, event, envFilePath strin
 	fmt.Printf("DaemonSet %s/%s environment variables written to %s (%s)\n", namespace, daemonsetName, envFilePath, event)
 }
 
-func generateKubernetesEnvVars(clientset *kubernetes.Clientset) string {
+func generateKubernetesEnvVars(clientset *kubernetes.Clientset) (string, string) {
 	var envVars []string
 
 	// Retrieve the Kubernetes service from the "default" namespace.
 	kubeService, err := clientset.CoreV1().Services("default").Get(context.TODO(), "kubernetes", metav1.GetOptions{})
 	if err != nil {
 		fmt.Printf("Error retrieving Kubernetes service: %v\n", err)
-		return ""
+		return "", ""
 	}
 
-	// Get the ClusterIP and the port
+	// Get the ClusterIP and the port.
 	kubeHost := kubeService.Spec.ClusterIP
 	kubePort := kubeService.Spec.Ports[0].Port
 
-	// Log the retrieved service details for debugging
-	fmt.Printf("Kubernetes Service found: Host=%s, Port=%d\n", kubeHost, kubePort)
+	// Create the kubeconfig generation script content
+	kubeconfigScript := fmt.Sprintf(`
+#!/bin/bash
+
+# XXX for the moment, generate every time.
+rm -f /tmp/kubeconfig
+
+# Check if kubeconfig already exists
+if [ ! -f /tmp/kubeconfig ]; then
+    # Use sudo to generate the kubeconfig as root
+    sudo bash -c '
+    mkdir -p /tmp
+    cat <<EOF > /tmp/kubeconfig
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://%v:%v
+    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  name: in-cluster
+contexts:
+- context:
+    cluster: in-cluster
+    namespace: $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    user: default
+  name: in-cluster
+current-context: in-cluster
+users:
+- name: default
+  user:
+    token: $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+EOF
+    '
+fi
+
+# Mode is 0400.
+export KUBECONFIG=/tmp/kubeconfig
+`, kubeHost, kubePort)
 
 	// Set the necessary KUBERNETES_* environment variables
 	envVars = append(envVars,
@@ -220,7 +261,7 @@ func generateKubernetesEnvVars(clientset *kubernetes.Clientset) string {
 		fmt.Sprintf("export KUBERNETES_SERVICE_PORT_HTTPS=%d", kubePort),
 	)
 
-	return strings.Join(envVars, "\n")
+	return kubeconfigScript, strings.Join(envVars, "\n") + "\n"
 }
 
 func extractEnvVarsFromDeployment(deployment *v1.Deployment, clientset *kubernetes.Clientset) string {
@@ -241,12 +282,6 @@ func extractEnvVarsFromDeployment(deployment *v1.Deployment, clientset *kubernet
 			}
 		}
 	}
-
-	// These are specified in the containerfile as explicit ENV
-	// variables. (None at the moment.)
-
-	// Add Kubernetes environment variables dynamically.
-	envFileContent += generateKubernetesEnvVars(clientset)
 
 	return envFileContent
 }
@@ -269,12 +304,6 @@ func extractEnvVarsFromDaemonSet(daemonSet *v1.DaemonSet, clientset *kubernetes.
 			}
 		}
 	}
-
-	// These are specified in the containerfile as explicit ENV
-	// variables. (None at the moment.)
-
-	// Add Kubernetes environment variables dynamically.
-	envFileContent += generateKubernetesEnvVars(clientset)
 
 	return envFileContent
 }
@@ -313,7 +342,7 @@ func resolveEnvValueFrom(valueFrom *corev1.EnvVarSource, clientset *kubernetes.C
 }
 
 func writeKindHostPathScript(envDir string) error {
-	scriptContent := `export PATH="$PATH${HOST_PATH:+:$HOST_PATH}"`
+	scriptContent := `export PATH="$PATH${KIND_HOST_PATH:+:$KIND_HOST_PATH}"`
 	scriptPath := filepath.Join(envDir, "kind-host-path.sh")
 
 	err := os.WriteFile(scriptPath, []byte(scriptContent), 0755)
@@ -322,5 +351,20 @@ func writeKindHostPathScript(envDir string) error {
 	}
 
 	fmt.Printf("Script %s written successfully\n", scriptPath)
+	return nil
+}
+
+func writeKubeEnvFile(envFilePath string, clientset *kubernetes.Clientset) error {
+	kubeconfigScript, envVars := generateKubernetesEnvVars(clientset)
+
+	// Combine the kubeconfig generation script and environment variable exports
+	fullScript := fmt.Sprintf("%s\n%s", kubeconfigScript, envVars)
+
+	err := os.WriteFile(envFilePath, []byte(fullScript), 0644)
+	if err != nil {
+		return fmt.Errorf("error writing to file: %v", err)
+	}
+
+	fmt.Printf("Kubernetes environment variables written to %s\n", envFilePath)
 	return nil
 }

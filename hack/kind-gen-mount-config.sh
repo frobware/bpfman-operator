@@ -18,7 +18,7 @@
 #   export PATH=$PATH${KIND_HOST_PATH:+:$KIND_HOST_PATH}
 #
 # to your shell initialisation (e.g., ~/.bash_profile) which will make
-# your host's tool available in the container.
+# your host's tools available in the container.
 
 # Function to sanitise names to conform with RFC 1123, ensuring the
 # name is lowercase, contains only letters, digits, and hyphens, and
@@ -55,11 +55,12 @@ process_and_add_path() {
     fi
 }
 
-
 # Main function to generate either kind or daemonset configuration.
 generate_config() {
     local mode="$1"
     shift # Remove mode from arguments
+    local ip_address="$1"
+    shift # Remove IP address from arguments if provided
     local volume_args=()
 
     # Default paths to check with mount options.
@@ -88,9 +89,9 @@ generate_config() {
     done
 
     # Add paths from NIX_PROFILES as read-only.
-    if [ -n "$NIX_PROFILES" ]; then
+    if [ -n "$XXX_NIX_PROFILES" ]; then
         for profile_path in $NIX_PROFILES; do
-            if [ -e "$profile_path" ]; then
+            if [ -e "$profile_path" ];then
                 paths_to_check+=("$profile_path:ro")
             else
                 if [ "$verbose" = true ]; then
@@ -123,6 +124,31 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+EOF
+
+        if [ -n "$ip_address" ]; then
+            cat << EOF
+    extraPortMappings:
+      - listenAddress: $ip_address
+        protocol: TCP
+EOF
+        fi
+
+        if [ -n "$ip_address" ]; then
+            cat << EOF
+    kubeadmConfigPatches:
+      - |
+        apiVersion: kubeadm.k8s.io/v1beta2
+        kind: ClusterConfiguration
+        apiServer:
+          certSANs:
+            - "$ip_address"
+            - "127.0.0.1"
+            - "10.96.0.1"
+EOF
+        fi
+
+        cat << EOF
     extraMounts:
 EOF
 
@@ -181,7 +207,7 @@ EOF
         done
 
     else
-        echo "Usage: $0 [--verbose] kind|daemonset [additional paths...]"
+        echo "Usage: $0 [--verbose] kind|daemonset [ip_address] [additional paths...]"
         exit 1
     fi
 }
@@ -189,8 +215,9 @@ EOF
 # Parse arguments
 verbose=false
 mode=""
+ip_address=""
 
-# Check for --verbose flag and mode
+# Check for --verbose flag, mode, and optional IP address
 for arg in "$@"; do
     if [ "$arg" == "--verbose" ]; then
         verbose=true
@@ -198,14 +225,17 @@ for arg in "$@"; do
     elif [ -z "$mode" ] && [[ "$arg" == "kind" || "$arg" == "daemonset" ]]; then
         mode="$arg"
         shift
+    elif [[ -z "$ip_address" && "$mode" == "kind" ]]; then
+        ip_address="$arg"
+        shift
     else
         break
     fi
 done
 
 if [ -z "$mode" ]; then
-    echo "Mode not specified. Usage: $0 [--verbose] kind|daemonset [additional paths...]"
+    echo "Mode not specified. Usage: $0 [--verbose] kind|daemonset [ip_address] [additional paths...]"
     exit 1
 fi
 
-generate_config "$mode" "$@"
+generate_config "$mode" "$ip_address" "$@"
