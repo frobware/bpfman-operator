@@ -59,6 +59,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Write the kind-host-path.sh script to /etc/profile.d
+	if err := writeKindHostPathScript(envDir); err != nil {
+		fmt.Printf("Error writing kind-host-path.sh: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Create a list watcher for the deployments.
 	deploymentListWatcher := cache.NewListWatchFromClient(
 		clientset.AppsV1().RESTClient(),
@@ -304,4 +310,17 @@ func resolveEnvValueFrom(valueFrom *corev1.EnvVarSource, clientset *kubernetes.C
 	// SecretKeyRef, ResourceFieldRef) here if needed.
 
 	return "", fmt.Errorf("unsupported EnvVarSource")
+}
+
+func writeKindHostPathScript(envDir string) error {
+	scriptContent := `export PATH="$PATH${HOST_PATH:+:$HOST_PATH}"`
+	scriptPath := filepath.Join(envDir, "kind-host-path.sh")
+
+	err := os.WriteFile(scriptPath, []byte(scriptContent), 0755)
+	if err != nil {
+		return fmt.Errorf("error writing to file: %v", err)
+	}
+
+	fmt.Printf("Script %s written successfully\n", scriptPath)
+	return nil
 }
