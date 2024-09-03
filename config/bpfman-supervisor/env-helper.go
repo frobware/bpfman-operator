@@ -214,15 +214,9 @@ func generateKubernetesEnvVars(clientset *kubernetes.Clientset) (string, string)
 	kubeconfigScript := fmt.Sprintf(`
 #!/bin/bash
 
-# XXX for the moment, generate every time.
-rm -f /tmp/kubeconfig
-
-# Check if kubeconfig already exists
-if [ ! -f /tmp/kubeconfig ]; then
-    # Use sudo to generate the kubeconfig as root
-    sudo bash -c '
-    mkdir -p /tmp
-    cat <<EOF > /tmp/kubeconfig
+sudo bash -c '
+mkdir -p /tmp
+cat <<EOF > /tmp/kubeconfig
 apiVersion: v1
 kind: Config
 clusters:
@@ -243,9 +237,7 @@ users:
     token: $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 EOF
     '
-fi
 
-# Mode is 0400.
 export KUBECONFIG=/tmp/kubeconfig
 `, kubeHost, kubePort)
 
