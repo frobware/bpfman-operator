@@ -2,8 +2,8 @@ resources:
 - config.yaml
 - daemonset.yaml
 - csidriverinfo.yaml
-- manifests/role-binding.yaml
-- manifests/role-role.yaml
+- role-binding.yaml
+- role-role.yaml
 
 patchesStrategicMerge:
 - home-dir.yaml
