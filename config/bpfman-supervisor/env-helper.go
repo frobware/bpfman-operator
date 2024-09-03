@@ -188,32 +188,30 @@ func writeEnvFileFromDaemonSet(daemonSet *v1.DaemonSet, event, envFilePath strin
 func generateKubernetesEnvVars(clientset *kubernetes.Clientset) string {
 	var envVars []string
 
-	// Get the list of services in the namespace.
-	services, err := clientset.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
+	// Retrieve the Kubernetes service from the "default" namespace.
+	kubeService, err := clientset.CoreV1().Services("default").Get(context.TODO(), "kubernetes", metav1.GetOptions{})
 	if err != nil {
-		fmt.Printf("Error listing services: %v\n", err)
+		fmt.Printf("Error retrieving Kubernetes service: %v\n", err)
 		return ""
 	}
 
-	for _, service := range services.Items {
-		prefix := strings.ToUpper(service.Name) + "_SERVICE"
-		prefix = strings.ReplaceAll(prefix, "-", "_")
-		host := fmt.Sprintf("%s_HOST=%s", prefix, service.Spec.ClusterIP)
-		port := fmt.Sprintf("%s_PORT=%d", prefix, service.Spec.Ports[0].Port)
-		envVars = append(envVars, fmt.Sprintf("export %s", host))
-		envVars = append(envVars, fmt.Sprintf("export %s", port))
-	}
+	// Get the ClusterIP and the port
+	kubeHost := kubeService.Spec.ClusterIP
+	kubePort := kubeService.Spec.Ports[0].Port
 
-	// Add the Kubernetes service environment variables.
+	// Log the retrieved service details for debugging
+	fmt.Printf("Kubernetes Service found: Host=%s, Port=%d\n", kubeHost, kubePort)
+
+	// Set the necessary KUBERNETES_* environment variables
 	envVars = append(envVars,
-		"export KUBERNETES_SERVICE_PORT_HTTPS=443",
-		"export KUBERNETES_SERVICE_PORT=443",
-		"export KUBERNETES_PORT_443_TCP=tcp://10.96.0.1:443",
-		"export KUBERNETES_PORT_443_TCP_PROTO=tcp",
-		"export KUBERNETES_PORT_443_TCP_ADDR=10.96.0.1",
-		"export KUBERNETES_SERVICE_HOST=10.96.0.1",
-		"export KUBERNETES_PORT=tcp://10.96.0.1:443",
-		"export KUBERNETES_PORT_443_TCP_PORT=443",
+		fmt.Sprintf("export KUBERNETES_SERVICE_HOST=%s", kubeHost),
+		fmt.Sprintf("export KUBERNETES_SERVICE_PORT=%d", kubePort),
+		fmt.Sprintf("export KUBERNETES_PORT_443_TCP=tcp://%s:%d", kubeHost, kubePort),
+		fmt.Sprintf("export KUBERNETES_PORT_443_TCP_PROTO=tcp"),
+		fmt.Sprintf("export KUBERNETES_PORT_443_TCP_ADDR=%s", kubeHost),
+		fmt.Sprintf("export KUBERNETES_PORT_443_TCP_PORT=%d", kubePort),
+		fmt.Sprintf("export KUBERNETES_PORT=tcp://%s:%d", kubeHost, kubePort),
+		fmt.Sprintf("export KUBERNETES_SERVICE_PORT_HTTPS=%d", kubePort),
 	)
 
 	return strings.Join(envVars, "\n")
