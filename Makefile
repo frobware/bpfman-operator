@@ -464,8 +464,6 @@ deploy-supervisor: build-supervisord-image manifests kustomize ## Deploy bpfman-
 	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} docker.io/library/bpfman-supervisor:0.0.42
 	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
 	$(KUSTOMIZE) build config/supervisor | kubectl apply -f -
-	kubectl delete --ignore-not-found=$(ignore-not-found) -f config/bpfman-supervisor/manifests
-	kubectl apply -f config/bpfman-supervisor/manifests
 
 .PHONY: undeploy
 undeploy: ## Undeploy bpfman-operator from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
