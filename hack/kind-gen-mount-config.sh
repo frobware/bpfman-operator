@@ -3,10 +3,8 @@
 # This script is designed to generate Kubernetes configuration files,
 # specifically for KIND (Kubernetes IN Docker) clusters and
 # DaemonSets. The primary purpose is to mount the user's home
-# directory and any relevant Nix-related paths from the host into the
-# container. This is particularly useful for users running NixOS or
-# using Nix package management, as it allows necessary paths to be
-# accessed inside the Kubernetes environment.
+# directory (and any relevant Nix-related paths) from the host into
+# the container.
 #
 # The script supports mounting paths as read-only or read-write,
 # depending on the specified configuration. It also includes a
@@ -28,18 +26,17 @@ sanitise_name() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | tr '/' '-' | tr -c 'a-z0-9-' '-' | sed -E 's/^-+|-+$//g'
 }
 
-# Function to check if a path exists or is a valid symlink, and add it to volume_args.
+# Function to check if a path exists or is a valid symlink, and add it
+# to volume_args.
 process_and_add_path() {
     local path="$1"
     local mount_options="$2"
     local -n volume_args_ref=$3
 
-    # Verbose output
     if [ "$verbose" = true ]; then
         echo "Checking path: $path" >&2
     fi
 
-    # Verify the path or symlink
     if [ -e "$path" ]; then
         volume_args_ref+=("$path:$mount_options")
     elif [ -L "$path" ]; then
@@ -70,14 +67,14 @@ generate_config() {
 
     # Static paths with their mount options
     declare -A static_paths=(
-        ["/nix/store"]="ro"
+        ["/nix"]="ro"
         ["/etc/profiles"]="ro"
         ["/etc/static"]="ro"
         ["$user_id_path"]="rw"
         ["$HOME"]="rw"
     )
 
-    # Add static paths only if they exist
+    # Add static paths only if they exist.
     for path in "${!static_paths[@]}"; do
         if [ -e "$path" ]; then
             paths_to_check+=("$path:${static_paths[$path]}")
@@ -89,7 +86,7 @@ generate_config() {
     done
 
     # Add paths from NIX_PROFILES as read-only.
-    if [ -n "$XXX_NIX_PROFILES" ]; then
+    if [ -n "$NIX_PROFILES" ]; then
         for profile_path in $NIX_PROFILES; do
             if [ -e "$profile_path" ];then
                 paths_to_check+=("$profile_path:ro")
@@ -101,7 +98,8 @@ generate_config() {
         done
     fi
 
-    # Add any remaining command line arguments as paths to check with default rw.
+    # Add any remaining command line arguments as paths to check with
+    # default rw.
     if [ "$#" -gt 0 ]; then
         for extra_path in "$@"; do
             paths_to_check+=("$extra_path:rw")
@@ -217,7 +215,7 @@ verbose=false
 mode=""
 ip_address=""
 
-# Check for --verbose flag, mode, and optional IP address
+# Check for --verbose flag, mode, and optional IP address.
 for arg in "$@"; do
     if [ "$arg" == "--verbose" ]; then
         verbose=true
