@@ -1,0 +1,12 @@
+# Fast local development build for bpfman-agent
+# Assumes binaries are already built with 'make build'
+FROM quay.io/fedora/fedora-minimal
+
+WORKDIR /
+
+# Copy host-built agent binaries
+COPY ./bin/bpfman-agent .
+COPY ./bin/metrics-proxy .
+COPY ./bin/bpfman-crictl .
+
+ENTRYPOINT ["/bpfman-agent"]

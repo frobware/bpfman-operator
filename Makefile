@@ -365,6 +365,9 @@ endif
 .PHONY: build-images
 build-images: build-operator-image build-agent-image ## Build bpfman-agent and bpfman-operator images.
 
+.PHONY: build-images-local-dev
+build-images-local-dev: build-operator-image-local-dev build-agent-image-local-dev ## Build bpfman-agent and bpfman-operator images using local-dev fast build.
+
 .PHONY: build-operator-image
 build-operator-image: ## Build bpfman-operator image.
 	$(if $(filter $(OCI_BIN),podman), \
@@ -386,6 +389,14 @@ build-agent-image: ## Build bpfman-agent image.
 	  $(if $(filter $(OCI_BIN),podman),--volume "$(LOCAL_GOCACHE_PATH):$(CONTAINER_GOCACHE_PATH):z") \
 	  -f Containerfile.bpfman-agent .
 
+.PHONY: build-operator-image-local-dev
+build-operator-image-local-dev: build ## Build bpfman-operator image using local-dev fast build.
+	$(OCI_BIN) build -t ${BPFMAN_OPERATOR_IMG} -f Containerfile.operator.local-dev --ignorefile .dockerignore.local-dev .
+
+.PHONY: build-agent-image-local-dev
+build-agent-image-local-dev: build ## Build bpfman-agent image using local-dev fast build.
+	$(OCI_BIN) build -t ${BPFMAN_AGENT_IMG} -f Containerfile.agent.local-dev --ignorefile .dockerignore.local-dev .
+
 .PHONY: push-images
 push-images: ## Push bpfman-agent and bpfman-operator images.
 	$(OCI_BIN) push ${BPFMAN_OPERATOR_IMG}
@@ -394,6 +405,8 @@ push-images: ## Push bpfman-agent and bpfman-operator images.
 .PHONY: load-images-kind
 load-images-kind: ## Load bpfman-agent, and bpfman-operator images into the running local kind devel cluster.
 	./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} ${BPFMAN_OPERATOR_IMG} ${BPFMAN_AGENT_IMG}
+
+#./hack/kind-load-image.sh ${KIND_CLUSTER_NAME} ${BPFMAN_OPERATOR_IMG} ${BPFMAN_AGENT_IMG} ${BPFMAN_IMG}
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

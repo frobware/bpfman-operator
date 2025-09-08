@@ -1,0 +1,18 @@
+# Fast local development build for bpfman-operator
+# Assumes binaries are already built with 'make build'
+FROM quay.io/fedora/fedora-minimal
+
+WORKDIR /
+
+# Copy host-built operator binary
+COPY ./bin/bpfman-operator .
+
+# Copy required config files
+COPY ./config/bpfman-deployment/daemonset.yaml ./config/bpfman-deployment/daemonset.yaml
+COPY ./config/bpfman-deployment/csidriverinfo.yaml ./config/bpfman-deployment/csidriverinfo.yaml
+COPY ./config/bpfman-deployment/metrics-proxy-daemonset.yaml ./config/bpfman-deployment/metrics-proxy-daemonset.yaml
+COPY ./config/openshift/restricted-scc.yaml ./config/openshift/restricted-scc.yaml
+
+USER 65532:65532
+
+ENTRYPOINT ["/bpfman-operator"]

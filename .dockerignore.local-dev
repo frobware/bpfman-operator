@@ -1,0 +1,5 @@
+# Local-dev dockerignore - allows bin/ directory for fast builds
+# Everything is allowed except some obvious things we don't want
+.git
+*.log
+.dockerignore.bak
