@@ -7,11 +7,8 @@ WORKDIR /
 # Copy host-built operator binary
 COPY ./bin/bpfman-operator .
 
-# Copy required config files
-COPY ./config/bpfman-deployment/daemonset.yaml ./config/bpfman-deployment/daemonset.yaml
-COPY ./config/bpfman-deployment/csidriverinfo.yaml ./config/bpfman-deployment/csidriverinfo.yaml
-COPY ./config/bpfman-deployment/metrics-proxy-daemonset.yaml ./config/bpfman-deployment/metrics-proxy-daemonset.yaml
-COPY ./config/openshift/restricted-scc.yaml ./config/openshift/restricted-scc.yaml
+# Copy required config files in one layer
+COPY ./config ./config
 
 USER 65532:65532
 

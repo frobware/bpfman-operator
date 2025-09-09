@@ -391,11 +391,11 @@ build-agent-image: ## Build bpfman-agent image.
 
 .PHONY: build-operator-image-local-dev
 build-operator-image-local-dev: build ## Build bpfman-operator image using local-dev fast build.
-	$(OCI_BIN) build -t ${BPFMAN_OPERATOR_IMG} -f Containerfile.operator.local-dev --ignorefile .dockerignore.local-dev .
+	$(OCI_BIN) build -t ${BPFMAN_OPERATOR_IMG} -f Containerfile.operator.local-dev .
 
 .PHONY: build-agent-image-local-dev
 build-agent-image-local-dev: build ## Build bpfman-agent image using local-dev fast build.
-	$(OCI_BIN) build -t ${BPFMAN_AGENT_IMG} -f Containerfile.agent.local-dev --ignorefile .dockerignore.local-dev .
+	$(OCI_BIN) build -t ${BPFMAN_AGENT_IMG} -f Containerfile.agent.local-dev .
 
 .PHONY: push-images
 push-images: ## Push bpfman-agent and bpfman-operator images.

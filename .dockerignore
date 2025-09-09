@@ -1,1 +1,7 @@
-bin
+# Allow specific binaries needed for local-dev builds
+# but exclude everything else from bin/
+bin/*
+!bin/bpfman-operator
+!bin/bpfman-agent
+!bin/metrics-proxy
+!bin/bpfman-crictl
