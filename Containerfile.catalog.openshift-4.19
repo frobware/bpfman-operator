@@ -1,14 +1,27 @@
+# Build Go transformation tool
+ARG GO_BUILDER_IMAGE_REF=golang:1.23
+FROM ${GO_BUILDER_IMAGE_REF} AS builder
+WORKDIR /usr/src/redhat-rebrand
+COPY go.mod go.sum ./
+COPY vendor/ ./vendor/
+COPY hack/openshift/ ./hack/openshift/
+RUN go build -o update_catalog hack/openshift/update_catalog.go
+
 # The base image is expected to contain
 # /bin/opm (with a serve subcommand) and /bin/grpc_health_probe
 FROM registry.redhat.io/openshift4/ose-operator-registry-rhel9:v4.19
 
 # Copy files to final location and process in place
 COPY catalog /configs/bpfman-operator
-COPY hack/update_catalog.sh .
+COPY --from=builder /usr/src/redhat-rebrand/update_catalog /usr/local/bin/
+COPY --from=builder /usr/src/redhat-rebrand/hack/openshift/konflux/images/ /images/
 
 # USER root required because base image runs as uid=1001 but we need write access to /configs
 USER root
-RUN ./update_catalog.sh && rm ./update_catalog.sh
+RUN /usr/local/bin/update_catalog \
+    --index-file /configs/bpfman-operator/index.yaml \
+    --bundle-pullspec "$(cat /images/bpfman-operator-bundle.txt)" \
+    --operator-pullspec "$(cat /images/bpfman-operator.txt)"
 
 # Configure the entrypoint and command
 ENTRYPOINT ["/bin/opm"]
