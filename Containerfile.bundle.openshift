@@ -21,7 +21,7 @@
 #   podman cp temp-bundle:/manifests/bpfman-operator.clusterserviceversion.yaml ./
 #   podman rm temp-bundle
 
-ARG GO_BUILDER_IMAGE_REF=brew.registry.redhat.com/rh-osbs/openshift-golang-builder:v1.23
+ARG GO_BUILDER_IMAGE_REF=registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.23-openshift-4.19
 FROM ${GO_BUILDER_IMAGE_REF} AS builder
 
 WORKDIR /usr/src/redhat-rebrand
