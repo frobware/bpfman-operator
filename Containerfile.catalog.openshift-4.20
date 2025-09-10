@@ -21,7 +21,7 @@
 #   podman rm temp-catalog
 
 # Build Go transformation tool and transform catalog files
-ARG GO_BUILDER_IMAGE_REF=registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.24-openshift-4.20
+ARG GO_BUILDER_IMAGE_REF=brew.registry.redhat.io/rh-osbs/openshift-golang-builder:v1.23
 FROM ${GO_BUILDER_IMAGE_REF} AS builder
 WORKDIR /usr/src/redhat-rebrand
 COPY go.mod go.sum ./
