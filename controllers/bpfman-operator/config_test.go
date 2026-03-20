@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,11 +50,15 @@ const (
 )
 
 type clusterObjects struct {
-	cm        *corev1.ConfigMap
-	csiDriver *storagev1.CSIDriver
-	ds        *appsv1.DaemonSet
-	metricsDs *appsv1.DaemonSet
-	scc       *osv1.SecurityContextConstraints
+	cm               *corev1.ConfigMap
+	csiDriver        *storagev1.CSIDriver
+	ds               *appsv1.DaemonSet
+	metricsDs        *appsv1.DaemonSet
+	scc              *osv1.SecurityContextConstraints
+	privilegedSccCrb *rbacv1.ClusterRoleBinding
+	userCr           *rbacv1.ClusterRole
+	prometheusCrb    *rbacv1.ClusterRoleBinding
+	prometheusRb     *rbacv1.RoleBinding
 }
 
 // TestReconcile tests the BpfmanConfigReconciler's ability to create, update, and restore
@@ -128,6 +133,27 @@ func TestReconcile(t *testing.T) {
 				objects["restricted-scc"] = &osv1.SecurityContextConstraints{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: internal.BpfmanRestrictedSccName,
+					},
+				}
+				objects["privileged-scc-crb"] = &rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: internal.BpfmanPrivilegedSccClusterRoleBindingName,
+					},
+				}
+				objects["user-cr"] = &rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: internal.BpfmanUserClusterRoleName,
+					},
+				}
+				objects["prometheus-crb"] = &rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: internal.BpfmanPrometheusClusterRoleBindingName,
+					},
+				}
+				objects["prometheus-rb"] = &rbacv1.RoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      internal.BpfmanPrometheusRoleBindingName,
+						Namespace: internal.BpfmanNamespace,
 					},
 				}
 			}
@@ -239,6 +265,7 @@ func setupTestEnvironment(isOpenShift bool) (*BpfmanConfigReconciler, *v1alpha1.
 	s.AddKnownTypes(appsv1.SchemeGroupVersion, &appsv1.DaemonSet{})
 	s.AddKnownTypes(storagev1.SchemeGroupVersion, &storagev1.CSIDriver{})
 	s.AddKnownTypes(osv1.GroupVersion, &osv1.SecurityContextConstraints{})
+	s.AddKnownTypes(rbacv1.SchemeGroupVersion, &rbacv1.ClusterRoleBinding{}, &rbacv1.ClusterRole{}, &rbacv1.RoleBinding{})
 
 	// Create a fake client to mock API calls.
 	cl := fake.NewClientBuilder().WithRuntimeObjects(objs...).Build()
@@ -496,6 +523,63 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 			return fmt.Errorf("deep equal failed, actualRestrictedSCC.Spec: %+v, expectedRestrictedSCC.Spec: %+v",
 				actualRestrictedSCC, expectedRestrictedSCC)
 		}
+
+		// Check the privileged SCC ClusterRoleBinding.
+		privilegedCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName}, privilegedCRB); err != nil {
+			return fmt.Errorf("get ClusterRoleBinding %s: %w", internal.BpfmanPrivilegedSccClusterRoleBindingName, err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, privilegedCRB); err != nil {
+			return err
+		}
+		if privilegedCRB.RoleRef.Name != "system:openshift:scc:privileged" {
+			return fmt.Errorf("privileged CRB roleRef.name=%q, expected %q",
+				privilegedCRB.RoleRef.Name, "system:openshift:scc:privileged")
+		}
+		if len(privilegedCRB.Subjects) != 1 || privilegedCRB.Subjects[0].Name != "bpfman-daemon" {
+			return fmt.Errorf("privileged CRB subjects=%+v, expected single bpfman-daemon SA", privilegedCRB.Subjects)
+		}
+
+		// Check the bpfman-user ClusterRole.
+		userCR := &rbacv1.ClusterRole{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanUserClusterRoleName}, userCR); err != nil {
+			return fmt.Errorf("get ClusterRole %s: %w", internal.BpfmanUserClusterRoleName, err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, userCR); err != nil {
+			return err
+		}
+		if len(userCR.Rules) != 1 || userCR.Rules[0].Verbs[0] != "use" {
+			return fmt.Errorf("user CR rules=%+v, expected single 'use' rule for bpfman-restricted SCC", userCR.Rules)
+		}
+
+		// Check the Prometheus metrics reader ClusterRoleBinding.
+		promCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName}, promCRB); err != nil {
+			return fmt.Errorf("get ClusterRoleBinding %s: %w", internal.BpfmanPrometheusClusterRoleBindingName, err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, promCRB); err != nil {
+			return err
+		}
+		if promCRB.RoleRef.Name != "bpfman-metrics-reader" {
+			return fmt.Errorf("prometheus CRB roleRef.name=%q, expected %q",
+				promCRB.RoleRef.Name, "bpfman-metrics-reader")
+		}
+
+		// Check the Prometheus RoleBinding.
+		promRB := &rbacv1.RoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanPrometheusRoleBindingName,
+			Namespace: internal.BpfmanNamespace,
+		}, promRB); err != nil {
+			return fmt.Errorf("get RoleBinding %s: %w", internal.BpfmanPrometheusRoleBindingName, err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, promRB); err != nil {
+			return err
+		}
+		if promRB.RoleRef.Name != "bpfman-prometheus-k8s" {
+			return fmt.Errorf("prometheus RB roleRef.name=%q, expected %q",
+				promRB.RoleRef.Name, "bpfman-prometheus-k8s")
+		}
 	}
 	return nil
 }
@@ -600,6 +684,69 @@ func modifyObjects(ctx context.Context, cl client.Client, isOpenShift bool) (clu
 			return co, err
 		}
 		co.scc = restrictedSCC
+
+		// Corrupt the privileged SCC ClusterRoleBinding subjects.
+		privilegedCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName}, privilegedCRB); err != nil {
+			return co, err
+		}
+		privilegedCRB.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "wrong-sa",
+			Namespace: "wrong-ns",
+		}}
+		if err := cl.Update(ctx, privilegedCRB); err != nil {
+			return co, err
+		}
+		co.privilegedSccCrb = privilegedCRB
+
+		// Corrupt the bpfman-user ClusterRole rules.
+		userCR := &rbacv1.ClusterRole{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanUserClusterRoleName}, userCR); err != nil {
+			return co, err
+		}
+		userCR.Rules = []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get"},
+		}}
+		if err := cl.Update(ctx, userCR); err != nil {
+			return co, err
+		}
+		co.userCr = userCR
+
+		// Corrupt the Prometheus metrics reader ClusterRoleBinding subjects.
+		promCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName}, promCRB); err != nil {
+			return co, err
+		}
+		promCRB.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "wrong-sa",
+			Namespace: "wrong-ns",
+		}}
+		if err := cl.Update(ctx, promCRB); err != nil {
+			return co, err
+		}
+		co.prometheusCrb = promCRB
+
+		// Corrupt the Prometheus RoleBinding subjects.
+		promRB := &rbacv1.RoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanPrometheusRoleBindingName,
+			Namespace: internal.BpfmanNamespace,
+		}, promRB); err != nil {
+			return co, err
+		}
+		promRB.Subjects = []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "wrong-sa",
+			Namespace: "wrong-ns",
+		}}
+		if err := cl.Update(ctx, promRB); err != nil {
+			return co, err
+		}
+		co.prometheusRb = promRB
 	}
 	return co, nil
 }
@@ -726,6 +873,34 @@ func setOverrides(ctx context.Context, cl client.Client) error {
 			Name:       "bpfman-restricted",
 			Unmanaged:  true,
 		},
+		{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRoleBinding",
+			Namespace:  "",
+			Name:       internal.BpfmanPrivilegedSccClusterRoleBindingName,
+			Unmanaged:  true,
+		},
+		{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRole",
+			Namespace:  "",
+			Name:       internal.BpfmanUserClusterRoleName,
+			Unmanaged:  true,
+		},
+		{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "ClusterRoleBinding",
+			Namespace:  "",
+			Name:       internal.BpfmanPrometheusClusterRoleBindingName,
+			Unmanaged:  true,
+		},
+		{
+			APIVersion: "rbac.authorization.k8s.io/v1",
+			Kind:       "RoleBinding",
+			Namespace:  internal.BpfmanNamespace,
+			Name:       internal.BpfmanPrometheusRoleBindingName,
+			Unmanaged:  true,
+		},
 	}
 
 	if err := cl.Update(ctx, bpfmanConfig); err != nil {
@@ -811,6 +986,45 @@ func testObjectsUnchanged(ctx context.Context, cl client.Client, isOpenShift boo
 		}
 		if !reflect.DeepEqual(restrictedSCC, cos.scc) {
 			return fmt.Errorf("deep equal failed for SCC, got: %+v, expected: %+v", restrictedSCC, cos.scc)
+		}
+
+		// Privileged SCC ClusterRoleBinding should be unchanged.
+		privilegedCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName}, privilegedCRB); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(privilegedCRB, cos.privilegedSccCrb) {
+			return fmt.Errorf("deep equal failed for privileged SCC CRB, got: %+v, expected: %+v", privilegedCRB, cos.privilegedSccCrb)
+		}
+
+		// bpfman-user ClusterRole should be unchanged.
+		userCR := &rbacv1.ClusterRole{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanUserClusterRoleName}, userCR); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(userCR, cos.userCr) {
+			return fmt.Errorf("deep equal failed for user CR, got: %+v, expected: %+v", userCR, cos.userCr)
+		}
+
+		// Prometheus metrics reader ClusterRoleBinding should be unchanged.
+		promCRB := &rbacv1.ClusterRoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName}, promCRB); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(promCRB, cos.prometheusCrb) {
+			return fmt.Errorf("deep equal failed for prometheus CRB, got: %+v, expected: %+v", promCRB, cos.prometheusCrb)
+		}
+
+		// Prometheus RoleBinding should be unchanged.
+		promRB := &rbacv1.RoleBinding{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanPrometheusRoleBindingName,
+			Namespace: internal.BpfmanNamespace,
+		}, promRB); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(promRB, cos.prometheusRb) {
+			return fmt.Errorf("deep equal failed for prometheus RB, got: %+v, expected: %+v", promRB, cos.prometheusRb)
 		}
 	}
 
