@@ -14,7 +14,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,6 +32,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -128,6 +131,29 @@ func managedObjects() []client.Object {
 				Name: internal.BpfmanRestrictedSccName,
 			},
 		})
+		objects = append(objects, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: internal.BpfmanPrivilegedSccClusterRoleBindingName,
+			},
+		})
+		objects = append(objects, &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: internal.BpfmanUserClusterRoleName,
+			},
+		})
+		if hasMonitoring {
+			objects = append(objects, &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: internal.BpfmanPrometheusClusterRoleBindingName,
+				},
+			})
+			objects = append(objects, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      internal.BpfmanPrometheusRoleBindingName,
+					Namespace: internal.BpfmanNamespace,
+				},
+			})
+		}
 	}
 	return objects
 }
@@ -141,6 +167,7 @@ func TestLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 	logger := zap.New()
+	ctrl.SetLogger(logger)
 	scheme := runtime.NewScheme()
 
 	// Get Kubernetes client for OpenShift detection and determine if this is OpenShift
@@ -500,6 +527,156 @@ func testResourceModification(ctx context.Context, t *testing.T) error {
 			},
 		); err != nil {
 			return err
+		}
+
+		// Test privileged SCC ClusterRoleBinding drift repair.
+		privCRB := &rbacv1.ClusterRoleBinding{}
+		privCRBKey := types.NamespacedName{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName}
+		if err := runtimeClient.Get(ctx, privCRBKey, privCRB); err != nil {
+			return err
+		}
+		origPrivSubjects := privCRB.Subjects
+		applyPrivCRB := &rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "rbac.authorization.k8s.io/v1",
+				Kind:       "ClusterRoleBinding",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: internal.BpfmanPrivilegedSccClusterRoleBindingName,
+			},
+			RoleRef: privCRB.RoleRef,
+			Subjects: []rbacv1.Subject{{
+				Kind:      "ServiceAccount",
+				Name:      invalidValue,
+				Namespace: invalidValue,
+			}},
+		}
+		if err := runtimeClient.Patch(ctx, applyPrivCRB, client.Apply, client.ForceOwnership, client.FieldOwner(fieldOwner)); err != nil {
+			return fmt.Errorf("could not apply patch: %w", err)
+		}
+		if err := waitUntilCondition(ctx, func() (bool, error) {
+			t.Logf("Checking that privileged SCC CRB was correctly reconciled")
+			crb := &rbacv1.ClusterRoleBinding{}
+			if err := runtimeClient.Get(ctx, privCRBKey, crb); err != nil {
+				return false, err
+			}
+			return equality.Semantic.DeepEqual(crb.Subjects, origPrivSubjects), nil
+		}); err != nil {
+			return err
+		}
+
+		// Test bpfman-user ClusterRole drift repair.
+		userCR := &rbacv1.ClusterRole{}
+		userCRKey := types.NamespacedName{Name: internal.BpfmanUserClusterRoleName}
+		if err := runtimeClient.Get(ctx, userCRKey, userCR); err != nil {
+			return err
+		}
+		origRules := userCR.Rules
+		applyUserCR := &rbacv1.ClusterRole{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "rbac.authorization.k8s.io/v1",
+				Kind:       "ClusterRole",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: internal.BpfmanUserClusterRoleName,
+			},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			}},
+		}
+		if err := runtimeClient.Patch(ctx, applyUserCR, client.Apply, client.ForceOwnership, client.FieldOwner(fieldOwner)); err != nil {
+			return fmt.Errorf("could not apply patch: %w", err)
+		}
+		if err := waitUntilCondition(ctx, func() (bool, error) {
+			t.Logf("Checking that bpfman-user ClusterRole was correctly reconciled")
+			cr := &rbacv1.ClusterRole{}
+			if err := runtimeClient.Get(ctx, userCRKey, cr); err != nil {
+				return false, err
+			}
+			return equality.Semantic.DeepEqual(cr.Rules, origRules), nil
+		}); err != nil {
+			return err
+		}
+
+		// Test Prometheus RBAC drift repair if monitoring is available.
+		if hasMonitoring {
+			// Prometheus metrics reader ClusterRoleBinding.
+			promCRB := &rbacv1.ClusterRoleBinding{}
+			promCRBKey := types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName}
+			if err := runtimeClient.Get(ctx, promCRBKey, promCRB); err != nil {
+				return err
+			}
+			origPromCRBSubjects := promCRB.Subjects
+			applyPromCRB := &rbacv1.ClusterRoleBinding{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "rbac.authorization.k8s.io/v1",
+					Kind:       "ClusterRoleBinding",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: internal.BpfmanPrometheusClusterRoleBindingName,
+				},
+				RoleRef: promCRB.RoleRef,
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      invalidValue,
+					Namespace: invalidValue,
+				}},
+			}
+			if err := runtimeClient.Patch(ctx, applyPromCRB, client.Apply, client.ForceOwnership, client.FieldOwner(fieldOwner)); err != nil {
+				return fmt.Errorf("could not apply patch: %w", err)
+			}
+			if err := waitUntilCondition(ctx, func() (bool, error) {
+				t.Logf("Checking that Prometheus CRB was correctly reconciled")
+				crb := &rbacv1.ClusterRoleBinding{}
+				if err := runtimeClient.Get(ctx, promCRBKey, crb); err != nil {
+					return false, err
+				}
+				return equality.Semantic.DeepEqual(crb.Subjects, origPromCRBSubjects), nil
+			}); err != nil {
+				return err
+			}
+
+			// Prometheus RoleBinding.
+			promRB := &rbacv1.RoleBinding{}
+			promRBKey := types.NamespacedName{
+				Name:      internal.BpfmanPrometheusRoleBindingName,
+				Namespace: internal.BpfmanNamespace,
+			}
+			if err := runtimeClient.Get(ctx, promRBKey, promRB); err != nil {
+				return err
+			}
+			origPromRBSubjects := promRB.Subjects
+			applyPromRB := &rbacv1.RoleBinding{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "rbac.authorization.k8s.io/v1",
+					Kind:       "RoleBinding",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      internal.BpfmanPrometheusRoleBindingName,
+					Namespace: internal.BpfmanNamespace,
+				},
+				RoleRef: promRB.RoleRef,
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      invalidValue,
+					Namespace: invalidValue,
+				}},
+			}
+			if err := runtimeClient.Patch(ctx, applyPromRB, client.Apply, client.ForceOwnership, client.FieldOwner(fieldOwner)); err != nil {
+				return fmt.Errorf("could not apply patch: %w", err)
+			}
+			if err := waitUntilCondition(ctx, func() (bool, error) {
+				t.Logf("Checking that Prometheus RoleBinding was correctly reconciled")
+				rb := &rbacv1.RoleBinding{}
+				if err := runtimeClient.Get(ctx, promRBKey, rb); err != nil {
+					return false, err
+				}
+				return equality.Semantic.DeepEqual(rb.Subjects, origPromRBSubjects), nil
+			}); err != nil {
+				return err
+			}
 		}
 	}
 

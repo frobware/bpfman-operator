@@ -55,9 +55,12 @@ import (
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=csidrivers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=privileged;bpfman-restricted,verbs=use
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=pods;endpoints;secrets,verbs=get;list;watch
+// +kubebuilder:rbac:urls=/metrics;/agent-metrics,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=bpfman.io,resources=configs,verbs=get;list;watch;create;update;patch;delete
@@ -91,7 +94,19 @@ func (r *BpfmanConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.IsOpenshift {
 		setup = setup.Owns(
 			&osv1.SecurityContextConstraints{},
-			builder.WithPredicates(resourcePredicate(internal.BpfmanRestrictedSccName)))
+			builder.WithPredicates(resourcePredicate(internal.BpfmanRestrictedSccName))).
+			Owns(
+				&rbacv1.ClusterRoleBinding{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanPrivilegedSccClusterRoleBindingName))).
+			Owns(
+				&rbacv1.ClusterRole{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanUserClusterRoleName))).
+			Owns(
+				&rbacv1.ClusterRoleBinding{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanPrometheusClusterRoleBindingName))).
+			Owns(
+				&rbacv1.RoleBinding{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanPrometheusRoleBindingName)))
 
 		if r.HasMonitoring {
 			// Watch the operator namespace so we can re-apply the
@@ -456,9 +471,9 @@ func (r *BpfmanConfigReconciler) reconcileNamespace(ctx context.Context, bpfmanC
 		}
 
 		osAnnotations := map[string]string{
-			"openshift.io/node-selector":     "",
-			"openshift.io/description":       "Openshift bpfman components",
-			"workload.openshift.io/allowed":  "management",
+			"openshift.io/node-selector":    "",
+			"openshift.io/description":      "Openshift bpfman components",
+			"workload.openshift.io/allowed": "management",
 		}
 		for k, v := range osAnnotations {
 			if namespace.Annotations[k] != v {
@@ -513,7 +528,7 @@ func (r *BpfmanConfigReconciler) reconcileAgentMetricsServiceAnnotation(ctx cont
 	return nil
 }
 
-// reconcileOpenShiftRBAC creates the RBAC resources needed for the
+// reconcileOpenShiftRBAC ensures the RBAC resources needed for the
 // bpfman-daemon service account to use the privileged and
 // bpfman-restricted SecurityContextConstraints on OpenShift.
 func (r *BpfmanConfigReconciler) reconcileOpenShiftRBAC(ctx context.Context, bpfmanConfig *v1alpha1.Config) error {
@@ -523,61 +538,48 @@ func (r *BpfmanConfigReconciler) reconcileOpenShiftRBAC(ctx context.Context, bpf
 
 	ns := bpfmanConfig.Spec.Namespace
 
-	// ClusterRoleBinding granting the privileged SCC to the
-	// bpfman-daemon service account.
 	privilegedCRB := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "bpfman-privileged-scc",
+			Name: internal.BpfmanPrivilegedSccClusterRoleBindingName,
 		},
-	}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: privilegedCRB.Name}, privilegedCRB); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("get ClusterRoleBinding %s: %w", privilegedCRB.Name, err)
-		}
-		privilegedCRB.RoleRef = rbacv1.RoleRef{
+		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
 			Name:     "system:openshift:scc:privileged",
-		}
-		privilegedCRB.Subjects = []rbacv1.Subject{{
+		},
+		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
 			Name:      "bpfman-daemon",
 			Namespace: ns,
-		}}
-		if err := r.Client.Create(ctx, privilegedCRB); err != nil {
-			return fmt.Errorf("create ClusterRoleBinding %s: %w", privilegedCRB.Name, err)
-		}
-		r.Logger.Info("Created ClusterRoleBinding", "name", privilegedCRB.Name)
+		}},
 	}
 
-	// ClusterRole allowing use of the bpfman-restricted SCC.
+	if err := assureResource(ctx, r, bpfmanConfig, privilegedCRB, func(existing, desired *rbacv1.ClusterRoleBinding) bool {
+		return !equality.Semantic.DeepEqual(existing.RoleRef, desired.RoleRef) ||
+			!equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects)
+	}); err != nil {
+		return err
+	}
+
 	userCR := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "bpfman-user",
+			Name: internal.BpfmanUserClusterRoleName,
 		},
-	}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: userCR.Name}, userCR); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("get ClusterRole %s: %w", userCR.Name, err)
-		}
-		userCR.Rules = []rbacv1.PolicyRule{{
+		Rules: []rbacv1.PolicyRule{{
 			APIGroups:     []string{"security.openshift.io"},
 			ResourceNames: []string{"bpfman-restricted"},
 			Resources:     []string{"securitycontextconstraints"},
 			Verbs:         []string{"use"},
-		}}
-		if err := r.Client.Create(ctx, userCR); err != nil {
-			return fmt.Errorf("create ClusterRole %s: %w", userCR.Name, err)
-		}
-		r.Logger.Info("Created ClusterRole", "name", userCR.Name)
+		}},
 	}
 
-	return nil
+	return assureResource(ctx, r, bpfmanConfig, userCR, func(existing, desired *rbacv1.ClusterRole) bool {
+		return !equality.Semantic.DeepEqual(existing.Rules, desired.Rules)
+	})
 }
 
-// reconcilePrometheusRBAC creates the RBAC resources needed for
-// the OpenShift Prometheus instance to scrape bpfman metrics
-// endpoints.
+// reconcilePrometheusRBAC ensures the RBAC resources needed for the
+// OpenShift Prometheus instance to scrape bpfman metrics endpoints.
 func (r *BpfmanConfigReconciler) reconcilePrometheusRBAC(ctx context.Context, bpfmanConfig *v1alpha1.Config) error {
 	if !r.IsOpenshift || !r.HasMonitoring {
 		return nil
@@ -585,39 +587,33 @@ func (r *BpfmanConfigReconciler) reconcilePrometheusRBAC(ctx context.Context, bp
 
 	ns := bpfmanConfig.Spec.Namespace
 
-	// RoleBinding granting the OpenShift Prometheus SA the
-	// prometheus-k8s Role in the bpfman namespace.
 	promRB := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "bpfman-prometheus-k8s",
+			Name:      internal.BpfmanPrometheusRoleBindingName,
 			Namespace: ns,
 		},
-	}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: promRB.Name, Namespace: ns}, promRB); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("get RoleBinding %s: %w", promRB.Name, err)
-		}
-		promRB.RoleRef = rbacv1.RoleRef{
+		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",
 			Name:     "bpfman-prometheus-k8s",
-		}
-		promRB.Subjects = []rbacv1.Subject{{
+		},
+		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
 			Name:      "prometheus-k8s",
 			Namespace: "openshift-monitoring",
-		}}
-		if err := r.Client.Create(ctx, promRB); err != nil {
-			return fmt.Errorf("create RoleBinding %s: %w", promRB.Name, err)
-		}
-		r.Logger.Info("Created RoleBinding", "name", promRB.Name)
+		}},
 	}
 
-	// ClusterRoleBinding granting the OpenShift Prometheus SA
-	// the metrics-reader ClusterRole.
+	if err := assureResource(ctx, r, bpfmanConfig, promRB, func(existing, desired *rbacv1.RoleBinding) bool {
+		return !equality.Semantic.DeepEqual(existing.RoleRef, desired.RoleRef) ||
+			!equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects)
+	}); err != nil {
+		return err
+	}
+
 	metricsReaderCRB := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "bpfman-prometheus-metrics-reader",
+			Name: internal.BpfmanPrometheusClusterRoleBindingName,
 			Labels: map[string]string{
 				"app.kubernetes.io/component":  "metrics",
 				"app.kubernetes.io/created-by": "bpfman-operator",
@@ -627,28 +623,22 @@ func (r *BpfmanConfigReconciler) reconcilePrometheusRBAC(ctx context.Context, bp
 				"app.kubernetes.io/part-of":    "bpfman-operator",
 			},
 		},
-	}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: metricsReaderCRB.Name}, metricsReaderCRB); err != nil {
-		if !errors.IsNotFound(err) {
-			return fmt.Errorf("get ClusterRoleBinding %s: %w", metricsReaderCRB.Name, err)
-		}
-		metricsReaderCRB.RoleRef = rbacv1.RoleRef{
+		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
 			Name:     "bpfman-metrics-reader",
-		}
-		metricsReaderCRB.Subjects = []rbacv1.Subject{{
+		},
+		Subjects: []rbacv1.Subject{{
 			Kind:      "ServiceAccount",
 			Name:      "prometheus-k8s",
 			Namespace: "openshift-monitoring",
-		}}
-		if err := r.Client.Create(ctx, metricsReaderCRB); err != nil {
-			return fmt.Errorf("create ClusterRoleBinding %s: %w", metricsReaderCRB.Name, err)
-		}
-		r.Logger.Info("Created ClusterRoleBinding", "name", metricsReaderCRB.Name)
+		}},
 	}
 
-	return nil
+	return assureResource(ctx, r, bpfmanConfig, metricsReaderCRB, func(existing, desired *rbacv1.ClusterRoleBinding) bool {
+		return !equality.Semantic.DeepEqual(existing.RoleRef, desired.RoleRef) ||
+			!equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects)
+	})
 }
 
 // resourcePredicate creates a predicate that filters events based on resource name.
@@ -697,6 +687,7 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 	for cindex, container := range staticBpfmanDS.Spec.Template.Spec.InitContainers {
 		if container.Name == internal.BpfmanInitContainerName {
 			staticBpfmanDS.Spec.Template.Spec.InitContainers[cindex].Image = config.Spec.Agent.Image
+			staticBpfmanDS.Spec.Template.Spec.InitContainers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Agent.Image)
 		}
 	}
 
@@ -704,8 +695,10 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 		switch container.Name {
 		case internal.BpfmanContainerName:
 			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Daemon.Image
+			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Daemon.Image)
 		case internal.BpfmanAgentContainerName:
 			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Agent.Image
+			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Agent.Image)
 			for aindex, arg := range container.Args {
 				if bpfmanHealthProbeAddr != "" {
 					if strings.Contains(arg, "health-probe-bind-address") {
@@ -718,6 +711,7 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 			if config.Spec.Daemon.CsiRegistrarImage != "" {
 				staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Daemon.CsiRegistrarImage
 			}
+			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image)
 		default:
 			// Do nothing
 		}
@@ -739,6 +733,7 @@ func configureMetricsProxyDs(staticMetricsProxyDS *appsv1.DaemonSet, config *v1a
 	for cindex, container := range staticMetricsProxyDS.Spec.Template.Spec.Containers {
 		if container.Name == internal.BpfmanMetricsProxyContainer {
 			staticMetricsProxyDS.Spec.Template.Spec.Containers[cindex].Image = bpfmanAgentImage
+			staticMetricsProxyDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(bpfmanAgentImage)
 		}
 	}
 
@@ -914,6 +909,17 @@ func (r *BpfmanConfigReconciler) handleDeletion(ctx context.Context, config *v1a
 
 	r.Logger.Info("Finalizer removed from Config, deletion will proceed", "name", config.Name)
 	return ctrl.Result{}, nil
+}
+
+// imagePullPolicy returns the pull policy that the kubelet would
+// default to for the given image reference.  Images tagged :latest or
+// with no tag get Always; everything else gets IfNotPresent.
+func imagePullPolicy(image string) corev1.PullPolicy {
+	// No tag or explicitly :latest → Always.
+	if i := strings.LastIndex(image, ":"); i < 0 || image[i+1:] == "latest" {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
 }
 
 func healthProbeAddress(healthProbePort int) string {

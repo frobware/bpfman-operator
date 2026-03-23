@@ -4,6 +4,11 @@ kind: ClusterRole
 metadata:
   name: operator-role
 rules:
+- nonResourceURLs:
+  - /agent-metrics
+  - /metrics
+  verbs:
+  - get
 - apiGroups:
   - ""
   resources:
@@ -19,6 +24,17 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - endpoints
+  - nodes
+  - pods
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   - services
   verbs:
@@ -26,14 +42,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - apps
@@ -126,6 +134,15 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - bpfman-restricted
+  - privileged
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
 - apiGroups:
   - storage.k8s.io
   resources:
