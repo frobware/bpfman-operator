@@ -1,17 +1,13 @@
 name: OLM Bundle Tests
 
 on:
-  pull_request:
-    branches: ["*"]
+  workflow_call:
   workflow_dispatch:
 
 jobs:
   olm-bundle-integration-tests:
-    name: OLM Bundle Integration Tests (Go ${{ matrix.go }} - amd64)
+    name: OLM Bundle Integration Tests (Go 1.25 - amd64)
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        go: ["1.25"]
     env:
       BPFMAN_AGENT_IMG: quay.io/bpfman/bpfman-agent:int-test
       BPFMAN_OPERATOR_IMG: quay.io/bpfman/bpfman-operator:int-test
@@ -28,23 +24,32 @@ jobs:
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           sudo rm -rf /usr/local/lib/android
 
-      - name: Install go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go }}
-
-      - name: Cache go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-build-codegen-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-build-codegen-
-
       - name: Checkout bpfman-operator
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Install go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-mod-
+
+      - name: Restore Go build cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ github.sha }}
+          restore-keys: |
+            go-build-
 
       - name: Deploy via OLM bundle on KIND
         run: make bundle-run-on-kind
@@ -57,18 +62,15 @@ jobs:
 
       - name: Upload diagnostics
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: olm-bundle-integration-test-diag
           path: /tmp/ktf-diag*
           if-no-files-found: ignore
 
   olm-bundle-lifecycle-tests:
-    name: OLM Bundle Lifecycle Tests (Go ${{ matrix.go }} - amd64)
+    name: OLM Bundle Lifecycle Tests (Go 1.25 - amd64)
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        go: ["1.25"]
     env:
       BPFMAN_AGENT_IMG: quay.io/bpfman/bpfman-agent:int-test
       BPFMAN_OPERATOR_IMG: quay.io/bpfman/bpfman-operator:int-test
@@ -85,23 +87,32 @@ jobs:
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
           sudo rm -rf /usr/local/lib/android
 
-      - name: Install go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go }}
-
-      - name: Cache go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-build-codegen-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-build-codegen-
-
       - name: Checkout bpfman-operator
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Install go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-mod-
+
+      - name: Restore Go build cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/go-build
+          key: go-build-${{ github.sha }}
+          restore-keys: |
+            go-build-
 
       - name: Deploy via OLM bundle on KIND
         run: make bundle-run-on-kind
@@ -114,7 +125,7 @@ jobs:
 
       - name: Upload diagnostics
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: olm-bundle-lifecycle-test-diag
           path: /tmp/ktf-diag*
