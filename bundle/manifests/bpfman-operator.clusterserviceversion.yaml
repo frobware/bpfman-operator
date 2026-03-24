@@ -994,7 +994,7 @@ metadata:
     capabilities: Basic Install
     categories: OpenShift Optional
     containerImage: quay.io/bpfman/bpfman-operator:latest
-    createdAt: "2026-03-19T18:20:23Z"
+    createdAt: "2026-03-24T09:09:09Z"
     description: The bpfman Operator is designed to manage eBPF programs for applications.
     features.operators.openshift.io/cnf: "false"
     features.operators.openshift.io/cni: "false"
@@ -1387,6 +1387,11 @@ spec:
     spec:
       clusterPermissions:
       - rules:
+        - nonResourceURLs:
+          - /agent-metrics
+          - /metrics
+          verbs:
+          - get
         - apiGroups:
           - ""
           resources:
@@ -1402,6 +1407,17 @@ spec:
         - apiGroups:
           - ""
           resources:
+          - endpoints
+          - nodes
+          - pods
+          - secrets
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ""
+          resources:
           - namespaces
           - services
           verbs:
@@ -1409,14 +1425,6 @@ spec:
           - list
           - patch
           - update
-          - watch
-        - apiGroups:
-          - ""
-          resources:
-          - nodes
-          verbs:
-          - get
-          - list
           - watch
         - apiGroups:
           - apps
@@ -1509,6 +1517,15 @@ spec:
           - patch
           - update
           - watch
+        - apiGroups:
+          - security.openshift.io
+          resourceNames:
+          - bpfman-restricted
+          - privileged
+          resources:
+          - securitycontextconstraints
+          verbs:
+          - use
         - apiGroups:
           - storage.k8s.io
           resources:
