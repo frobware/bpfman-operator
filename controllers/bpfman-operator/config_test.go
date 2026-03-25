@@ -81,6 +81,7 @@ func TestReconcile(t *testing.T) {
 		{name: "plain-k8s", isOpenShift: false, hasMonitoring: false},
 		{name: "k8s-with-monitoring", isOpenShift: false, hasMonitoring: true},
 		{name: "openshift", isOpenShift: true, hasMonitoring: true},
+		{name: "openshift-without-monitoring", isOpenShift: true, hasMonitoring: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Log("Setting up test environment")
@@ -471,7 +472,7 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 		return fmt.Errorf("deep equal failed, actualCsiDriver.Spec: %+v, expectedCsiDriver.Spec: %+v",
 			actualCsiDriver.Spec, expectedCsiDriver.Spec)
 	}
-	if err := hasOwnerReference(bpfmanConfig, bpfmanCM); err != nil {
+	if err := hasOwnerReference(bpfmanConfig, actualCsiDriver); err != nil {
 		return err
 	}
 
@@ -497,20 +498,51 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 		return fmt.Errorf("deep equal failed, actualBpfmanDs.Spec: %+v, expectedBpfmanDs.Spec: %+v",
 			actualBpfmanDs.Spec, expectedBpfmanDs.Spec)
 	}
-	if err := hasOwnerReference(bpfmanConfig, bpfmanCM); err != nil {
+	if err := hasOwnerReference(bpfmanConfig, actualBpfmanDs); err != nil {
 		return err
 	}
 
 	if !hasMonitoring {
-		// Verify the metrics proxy DaemonSet does NOT exist when monitoring is unavailable.
-		absentMetricsDs := &appsv1.DaemonSet{}
-		err = cl.Get(ctx, types.NamespacedName{
-			Name:      internal.BpfmanMetricsProxyDsName,
-			Namespace: internal.BpfmanNamespace,
-		}, absentMetricsDs)
-		if err == nil {
-			return fmt.Errorf("metrics proxy DaemonSet %q should not exist without monitoring",
-				internal.BpfmanMetricsProxyDsName)
+		// Verify monitoring resources do NOT exist when monitoring is unavailable.
+		absentChecks := []struct {
+			name string
+			obj  client.Object
+			key  types.NamespacedName
+		}{
+			{"metrics proxy DaemonSet", &appsv1.DaemonSet{}, types.NamespacedName{
+				Name: internal.BpfmanMetricsProxyDsName, Namespace: internal.BpfmanNamespace}},
+			{"agent metrics Service", &corev1.Service{}, types.NamespacedName{
+				Name: internal.BpfmanAgentMetricsServiceName, Namespace: internal.BpfmanNamespace}},
+			{"controller metrics Service", &corev1.Service{}, types.NamespacedName{
+				Name: internal.BpfmanControllerMetricsServiceName, Namespace: internal.BpfmanNamespace}},
+			{"agent ServiceMonitor", &monitoringv1.ServiceMonitor{}, types.NamespacedName{
+				Name: internal.BpfmanAgentServiceMonitorName, Namespace: internal.BpfmanNamespace}},
+			{"controller ServiceMonitor", &monitoringv1.ServiceMonitor{}, types.NamespacedName{
+				Name: internal.BpfmanControllerServiceMonitorName, Namespace: internal.BpfmanNamespace}},
+		}
+		for _, c := range absentChecks {
+			if err := cl.Get(ctx, c.key, c.obj); err == nil {
+				return fmt.Errorf("%s %q should not exist without monitoring", c.name, c.key.Name)
+			}
+		}
+
+		if isOpenShift {
+			// Prometheus RBAC should not exist without monitoring even on OpenShift.
+			promAbsentChecks := []struct {
+				name string
+				obj  client.Object
+				key  types.NamespacedName
+			}{
+				{"Prometheus ClusterRoleBinding", &rbacv1.ClusterRoleBinding{}, types.NamespacedName{
+					Name: internal.BpfmanPrometheusClusterRoleBindingName}},
+				{"Prometheus RoleBinding", &rbacv1.RoleBinding{}, types.NamespacedName{
+					Name: internal.BpfmanPrometheusRoleBindingName, Namespace: internal.BpfmanNamespace}},
+			}
+			for _, c := range promAbsentChecks {
+				if err := cl.Get(ctx, c.key, c.obj); err == nil {
+					return fmt.Errorf("%s %q should not exist without monitoring", c.name, c.key.Name)
+				}
+			}
 		}
 	}
 
@@ -531,7 +563,7 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 			actualRestrictedSCC); err != nil {
 			return err
 		}
-		if err := hasOwnerReference(bpfmanConfig, bpfmanCM); err != nil {
+		if err := hasOwnerReference(bpfmanConfig, actualRestrictedSCC); err != nil {
 			return err
 		}
 		// Match fields that differ between the loaded manifest and the fake client's stored object.
@@ -710,6 +742,21 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 		if controllerSM.Spec.Endpoints[0].Path != "/metrics" {
 			return fmt.Errorf("controller ServiceMonitor endpoint path=%q, expected /metrics",
 				controllerSM.Spec.Endpoints[0].Path)
+		}
+
+		// Verify ServiceMonitor selectors match corresponding Service
+		// labels so that Prometheus actually discovers scrape targets.
+		for k, v := range agentSM.Spec.Selector.MatchLabels {
+			if agentSvc.Labels[k] != v {
+				return fmt.Errorf("agent ServiceMonitor selector %s=%s does not match agent Service labels %v",
+					k, v, agentSvc.Labels)
+			}
+		}
+		for k, v := range controllerSM.Spec.Selector.MatchLabels {
+			if controllerSvc.Labels[k] != v {
+				return fmt.Errorf("controller ServiceMonitor selector %s=%s does not match controller Service labels %v",
+					k, v, controllerSvc.Labels)
+			}
 		}
 	}
 	return nil
@@ -1309,56 +1356,121 @@ func testObjectsUnchanged(ctx context.Context, cl client.Client, isOpenShift, ha
 // TestAdoptExistingResources verifies that the reconciler adopts
 // pre-existing resources that lack an owner reference by writing the
 // controller owner reference on the next reconciliation, even when
-// the resource spec has not changed.
+// the resource spec has not changed.  Resources are pre-created
+// directly in the fake client (without ownerRefs) before the first
+// reconcile, simulating an upgrade from a release where these objects
+// were deployed via static manifests.
 func TestAdoptExistingResources(t *testing.T) {
 	r, bpfmanConfig, req, ctx, cl := setupTestEnvironment(true, true)
+
+	ns := bpfmanConfig.Spec.Namespace
+
+	// Pre-create resources that the controller would normally
+	// create, but without owner references -- simulating objects
+	// left behind by static manifests from an earlier release.
+	preExisting := []struct {
+		name string
+		obj  client.Object
+		key  types.NamespacedName
+	}{
+		{
+			name: "privileged SCC ClusterRoleBinding",
+			obj: &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "system:openshift:scc:privileged",
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind: "ServiceAccount", Name: "bpfman-daemon", Namespace: ns,
+				}},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName},
+		},
+		{
+			name: "bpfman-user ClusterRole",
+			obj: &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: internal.BpfmanUserClusterRoleName},
+				Rules: []rbacv1.PolicyRule{{
+					APIGroups:     []string{"security.openshift.io"},
+					ResourceNames: []string{"bpfman-restricted"},
+					Resources:     []string{"securitycontextconstraints"},
+					Verbs:         []string{"use"},
+				}},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanUserClusterRoleName},
+		},
+		{
+			name: "Prometheus RoleBinding",
+			obj: &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: internal.BpfmanPrometheusRoleBindingName, Namespace: ns,
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     "bpfman-prometheus-k8s",
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind: "ServiceAccount", Name: "prometheus-k8s", Namespace: "openshift-monitoring",
+				}},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanPrometheusRoleBindingName, Namespace: ns},
+		},
+		{
+			name: "Prometheus ClusterRoleBinding",
+			obj: &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: internal.BpfmanPrometheusClusterRoleBindingName},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "ClusterRole",
+					Name:     "bpfman-metrics-reader",
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind: "ServiceAccount", Name: "prometheus-k8s", Namespace: "openshift-monitoring",
+				}},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName},
+		},
+		{
+			name: "agent ServiceMonitor",
+			obj: &monitoringv1.ServiceMonitor{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: internal.BpfmanAgentServiceMonitorName, Namespace: ns,
+				},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanAgentServiceMonitorName, Namespace: ns},
+		},
+		{
+			name: "controller ServiceMonitor",
+			obj: &monitoringv1.ServiceMonitor{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: internal.BpfmanControllerServiceMonitorName, Namespace: ns,
+				},
+			},
+			key: types.NamespacedName{Name: internal.BpfmanControllerServiceMonitorName, Namespace: ns},
+		},
+	}
+
+	for _, p := range preExisting {
+		require.NoError(t, cl.Create(ctx, p.obj), "pre-create %s", p.name)
+	}
 
 	// Run initial reconcile (adds finalizer).
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	// Run second reconcile (creates resources).
+	// Run second reconcile (reconciles resources).
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	// Strip owner references from several resources to simulate
-	// an upgrade from a version that deployed these via static
-	// manifests.
-	orphans := []client.Object{
-		&rbacv1.ClusterRoleBinding{},
-		&rbacv1.ClusterRole{},
-		&monitoringv1.ServiceMonitor{},
-	}
-	keys := []types.NamespacedName{
-		{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName},
-		{Name: internal.BpfmanUserClusterRoleName},
-		{Name: internal.BpfmanAgentServiceMonitorName, Namespace: internal.BpfmanNamespace},
-	}
-
-	for i, obj := range orphans {
-		err := cl.Get(ctx, keys[i], obj)
-		require.NoError(t, err)
-		require.NotEmpty(t, obj.GetOwnerReferences(), "expected owner ref before stripping")
-		obj.SetOwnerReferences(nil)
-		require.NoError(t, cl.Update(ctx, obj))
-	}
-
-	// Verify the owner references were removed.
-	for i, obj := range orphans {
-		err := cl.Get(ctx, keys[i], obj)
-		require.NoError(t, err)
-		require.Empty(t, obj.GetOwnerReferences(), "owner ref should have been stripped")
-	}
-
-	// Run reconcile -- should adopt orphaned resources.
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	// Verify that owner references have been restored.
-	for i, obj := range orphans {
-		err := cl.Get(ctx, keys[i], obj)
-		require.NoError(t, err)
-		require.NoError(t, hasOwnerReference(bpfmanConfig, obj),
-			"resource %s should have been adopted", keys[i])
+	// Every pre-existing resource should now carry the controller
+	// owner reference despite having been created externally.
+	for _, p := range preExisting {
+		fresh := p.obj.DeepCopyObject().(client.Object)
+		require.NoError(t, cl.Get(ctx, p.key, fresh), "get %s", p.name)
+		require.NoError(t, hasOwnerReference(bpfmanConfig, fresh),
+			"%s should have been adopted", p.name)
 	}
 }
