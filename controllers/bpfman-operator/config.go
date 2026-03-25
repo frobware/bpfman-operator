@@ -687,7 +687,6 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 	for cindex, container := range staticBpfmanDS.Spec.Template.Spec.InitContainers {
 		if container.Name == internal.BpfmanInitContainerName {
 			staticBpfmanDS.Spec.Template.Spec.InitContainers[cindex].Image = config.Spec.Agent.Image
-			staticBpfmanDS.Spec.Template.Spec.InitContainers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Agent.Image)
 		}
 	}
 
@@ -695,10 +694,8 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 		switch container.Name {
 		case internal.BpfmanContainerName:
 			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Daemon.Image
-			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Daemon.Image)
 		case internal.BpfmanAgentContainerName:
 			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Agent.Image
-			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(config.Spec.Agent.Image)
 			for aindex, arg := range container.Args {
 				if bpfmanHealthProbeAddr != "" {
 					if strings.Contains(arg, "health-probe-bind-address") {
@@ -711,7 +708,6 @@ func configureBpfmanDs(staticBpfmanDS *appsv1.DaemonSet, config *v1alpha1.Config
 			if config.Spec.Daemon.CsiRegistrarImage != "" {
 				staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image = config.Spec.Daemon.CsiRegistrarImage
 			}
-			staticBpfmanDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(staticBpfmanDS.Spec.Template.Spec.Containers[cindex].Image)
 		default:
 			// Do nothing
 		}
@@ -733,7 +729,6 @@ func configureMetricsProxyDs(staticMetricsProxyDS *appsv1.DaemonSet, config *v1a
 	for cindex, container := range staticMetricsProxyDS.Spec.Template.Spec.Containers {
 		if container.Name == internal.BpfmanMetricsProxyContainer {
 			staticMetricsProxyDS.Spec.Template.Spec.Containers[cindex].Image = bpfmanAgentImage
-			staticMetricsProxyDS.Spec.Template.Spec.Containers[cindex].ImagePullPolicy = imagePullPolicy(bpfmanAgentImage)
 		}
 	}
 
@@ -909,17 +904,6 @@ func (r *BpfmanConfigReconciler) handleDeletion(ctx context.Context, config *v1a
 
 	r.Logger.Info("Finalizer removed from Config, deletion will proceed", "name", config.Name)
 	return ctrl.Result{}, nil
-}
-
-// imagePullPolicy returns the pull policy that the kubelet would
-// default to for the given image reference.  Images tagged :latest or
-// with no tag get Always; everything else gets IfNotPresent.
-func imagePullPolicy(image string) corev1.PullPolicy {
-	// No tag or explicitly :latest → Always.
-	if i := strings.LastIndex(image, ":"); i < 0 || image[i+1:] == "latest" {
-		return corev1.PullAlways
-	}
-	return corev1.PullIfNotPresent
 }
 
 func healthProbeAddress(healthProbePort int) string {
