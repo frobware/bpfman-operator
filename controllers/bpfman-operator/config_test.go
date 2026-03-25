@@ -57,6 +57,8 @@ type clusterObjects struct {
 	ds               *appsv1.DaemonSet
 	metricsDs        *appsv1.DaemonSet
 	scc              *osv1.SecurityContextConstraints
+	agentSvc         *corev1.Service
+	controllerSvc    *corev1.Service
 	agentSM          *monitoringv1.ServiceMonitor
 	controllerSM     *monitoringv1.ServiceMonitor
 	privilegedSccCrb *rbacv1.ClusterRoleBinding
@@ -164,6 +166,18 @@ func TestReconcile(t *testing.T) {
 				objects["metrics-daemonset"] = &appsv1.DaemonSet{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      internal.BpfmanMetricsProxyDsName,
+						Namespace: internal.BpfmanNamespace,
+					},
+				}
+				objects["agent-metrics-service"] = &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      internal.BpfmanAgentMetricsServiceName,
+						Namespace: internal.BpfmanNamespace,
+					},
+				}
+				objects["controller-metrics-service"] = &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      internal.BpfmanControllerMetricsServiceName,
 						Namespace: internal.BpfmanNamespace,
 					},
 				}
@@ -616,6 +630,45 @@ func testAllObjectsPresent(ctx context.Context, cl client.Client, bpfmanConfig *
 			return err
 		}
 
+		// Check the agent metrics Service was created.
+		agentSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanAgentMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, agentSvc); err != nil {
+			return fmt.Errorf("failed to get agent metrics Service: %w", err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, agentSvc); err != nil {
+			return fmt.Errorf("agent metrics Service owner reference: %w", err)
+		}
+		if len(agentSvc.Spec.Ports) != 1 || agentSvc.Spec.Ports[0].Port != 8443 {
+			return fmt.Errorf("agent metrics Service ports=%+v, expected single port 8443", agentSvc.Spec.Ports)
+		}
+		if agentSvc.Spec.Selector["name"] != "bpfman-metrics-proxy" {
+			return fmt.Errorf("agent metrics Service selector=%+v, expected name=bpfman-metrics-proxy",
+				agentSvc.Spec.Selector)
+		}
+
+		// Check the controller metrics Service was created.
+		controllerSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanControllerMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, controllerSvc); err != nil {
+			return fmt.Errorf("failed to get controller metrics Service: %w", err)
+		}
+		if err := hasOwnerReference(bpfmanConfig, controllerSvc); err != nil {
+			return fmt.Errorf("controller metrics Service owner reference: %w", err)
+		}
+		if len(controllerSvc.Spec.Ports) != 1 || controllerSvc.Spec.Ports[0].Port != 8443 {
+			return fmt.Errorf("controller metrics Service ports=%+v, expected single port 8443",
+				controllerSvc.Spec.Ports)
+		}
+		if controllerSvc.Spec.Selector["control-plane"] != "controller-manager" {
+			return fmt.Errorf("controller metrics Service selector=%+v, expected control-plane=controller-manager",
+				controllerSvc.Spec.Selector)
+		}
+
 		// Check the agent ServiceMonitor was created.
 		agentSM := &monitoringv1.ServiceMonitor{}
 		if err := cl.Get(ctx, types.NamespacedName{
@@ -830,6 +883,34 @@ func modifyObjects(ctx context.Context, cl client.Client, isOpenShift, hasMonito
 		}
 		co.metricsDs = metricsDs
 
+		// Modify agent metrics Service.
+		agentSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanAgentMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, agentSvc); err != nil {
+			return co, err
+		}
+		agentSvc.Spec.Ports[0].Port = 9999
+		if err := cl.Update(ctx, agentSvc); err != nil {
+			return co, err
+		}
+		co.agentSvc = agentSvc
+
+		// Modify controller metrics Service.
+		controllerSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanControllerMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, controllerSvc); err != nil {
+			return co, err
+		}
+		controllerSvc.Spec.Ports[0].Port = 9999
+		if err := cl.Update(ctx, controllerSvc); err != nil {
+			return co, err
+		}
+		co.controllerSvc = controllerSvc
+
 		// Modify agent ServiceMonitor.
 		agentSM := &monitoringv1.ServiceMonitor{}
 		if err := cl.Get(ctx, types.NamespacedName{
@@ -981,6 +1062,20 @@ func setOverrides(ctx context.Context, cl client.Client) error {
 			Kind:       "SecurityContextConstraints",
 			Namespace:  "",
 			Name:       "bpfman-restricted",
+			Unmanaged:  true,
+		},
+		{
+			APIVersion: "v1",
+			Kind:       "Service",
+			Namespace:  "bpfman",
+			Name:       internal.BpfmanAgentMetricsServiceName,
+			Unmanaged:  true,
+		},
+		{
+			APIVersion: "v1",
+			Kind:       "Service",
+			Namespace:  "bpfman",
+			Name:       internal.BpfmanControllerMetricsServiceName,
 			Unmanaged:  true,
 		},
 		{
@@ -1155,6 +1250,32 @@ func testObjectsUnchanged(ctx context.Context, cl client.Client, isOpenShift, ha
 			return fmt.Errorf("deep equal failed for Metrics DS, got: %+v, expected: %+v", metricsDs, cos.metricsDs)
 		}
 
+		// Agent metrics Service.
+		agentSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanAgentMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, agentSvc); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(agentSvc, cos.agentSvc) {
+			return fmt.Errorf("deep equal failed for agent metrics Service, got: %+v, expected: %+v",
+				agentSvc, cos.agentSvc)
+		}
+
+		// Controller metrics Service.
+		controllerSvc := &corev1.Service{}
+		if err := cl.Get(ctx, types.NamespacedName{
+			Name:      internal.BpfmanControllerMetricsServiceName,
+			Namespace: internal.BpfmanNamespace,
+		}, controllerSvc); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(controllerSvc, cos.controllerSvc) {
+			return fmt.Errorf("deep equal failed for controller metrics Service, got: %+v, expected: %+v",
+				controllerSvc, cos.controllerSvc)
+		}
+
 		// Agent ServiceMonitor.
 		agentSM := &monitoringv1.ServiceMonitor{}
 		if err := cl.Get(ctx, types.NamespacedName{
@@ -1183,4 +1304,61 @@ func testObjectsUnchanged(ctx context.Context, cl client.Client, isOpenShift, ha
 	}
 
 	return nil
+}
+
+// TestAdoptExistingResources verifies that the reconciler adopts
+// pre-existing resources that lack an owner reference by writing the
+// controller owner reference on the next reconciliation, even when
+// the resource spec has not changed.
+func TestAdoptExistingResources(t *testing.T) {
+	r, bpfmanConfig, req, ctx, cl := setupTestEnvironment(true, true)
+
+	// Run initial reconcile (adds finalizer).
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	// Run second reconcile (creates resources).
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	// Strip owner references from several resources to simulate
+	// an upgrade from a version that deployed these via static
+	// manifests.
+	orphans := []client.Object{
+		&rbacv1.ClusterRoleBinding{},
+		&rbacv1.ClusterRole{},
+		&monitoringv1.ServiceMonitor{},
+	}
+	keys := []types.NamespacedName{
+		{Name: internal.BpfmanPrivilegedSccClusterRoleBindingName},
+		{Name: internal.BpfmanUserClusterRoleName},
+		{Name: internal.BpfmanAgentServiceMonitorName, Namespace: internal.BpfmanNamespace},
+	}
+
+	for i, obj := range orphans {
+		err := cl.Get(ctx, keys[i], obj)
+		require.NoError(t, err)
+		require.NotEmpty(t, obj.GetOwnerReferences(), "expected owner ref before stripping")
+		obj.SetOwnerReferences(nil)
+		require.NoError(t, cl.Update(ctx, obj))
+	}
+
+	// Verify the owner references were removed.
+	for i, obj := range orphans {
+		err := cl.Get(ctx, keys[i], obj)
+		require.NoError(t, err)
+		require.Empty(t, obj.GetOwnerReferences(), "owner ref should have been stripped")
+	}
+
+	// Run reconcile -- should adopt orphaned resources.
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	// Verify that owner references have been restored.
+	for i, obj := range orphans {
+		err := cl.Get(ctx, keys[i], obj)
+		require.NoError(t, err)
+		require.NoError(t, hasOwnerReference(bpfmanConfig, obj),
+			"resource %s should have been adopted", keys[i])
+	}
 }

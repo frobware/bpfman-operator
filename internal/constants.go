@@ -33,6 +33,8 @@ const (
 	BpfmanRestrictedSccName                   = "bpfman-restricted"
 	BpfmanAgentServiceMonitorName             = "bpfman-agent-metrics-monitor"
 	BpfmanControllerServiceMonitorName        = "bpfman-controller-manager-metrics-monitor"
+	BpfmanAgentMetricsServiceName             = "bpfman-agent-metrics-service"
+	BpfmanControllerMetricsServiceName        = "bpfman-controller-manager-metrics-service"
 	BpfmanContainerName                       = "bpfman"
 	BpfmanAgentContainerName                  = "bpfman-agent"
 	BpfmanInitContainerName                   = "mount-bpffs"

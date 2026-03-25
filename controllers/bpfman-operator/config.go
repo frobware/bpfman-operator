@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,7 +59,7 @@ import (
 // +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=privileged;bpfman-restricted,verbs=use
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods;endpoints;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:urls=/metrics;/agent-metrics,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -129,6 +130,12 @@ func (r *BpfmanConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&appsv1.DaemonSet{},
 			builder.WithPredicates(resourcePredicate(internal.BpfmanMetricsProxyDsName))).
 			Owns(
+				&corev1.Service{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanAgentMetricsServiceName))).
+			Owns(
+				&corev1.Service{},
+				builder.WithPredicates(resourcePredicate(internal.BpfmanControllerMetricsServiceName))).
+			Owns(
 				&monitoringv1.ServiceMonitor{},
 				builder.WithPredicates(resourcePredicate(internal.BpfmanAgentServiceMonitorName))).
 			Owns(
@@ -192,6 +199,10 @@ func (r *BpfmanConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if err := r.reconcileMetricsProxyDS(ctx, bpfmanConfig); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileMetricsServices(ctx, bpfmanConfig); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -300,6 +311,87 @@ func (r *BpfmanConfigReconciler) reconcileMetricsProxyDS(ctx context.Context, bp
 	return assureResource(ctx, r, bpfmanConfig, metricsProxyDS, func(existing, desired *appsv1.DaemonSet) bool {
 		return !equality.Semantic.DeepEqual(existing.Spec, desired.Spec)
 	})
+}
+
+// reconcileMetricsServices ensures the metrics Services exist for
+// Prometheus to discover scrape targets. The agent metrics service is
+// headless so that Prometheus discovers each DaemonSet pod
+// individually rather than routing through a single virtual IP.
+func (r *BpfmanConfigReconciler) reconcileMetricsServices(ctx context.Context, bpfmanConfig *v1alpha1.Config) error {
+	if !r.HasMonitoring {
+		return nil
+	}
+
+	ns := bpfmanConfig.Spec.Namespace
+
+	agentSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      internal.BpfmanAgentMetricsServiceName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "agent-metrics-service",
+				"app.kubernetes.io/instance":   "agent-metrics-service",
+				"app.kubernetes.io/component":  "metrics",
+				"app.kubernetes.io/created-by": "bpfman-operator",
+				"app.kubernetes.io/part-of":    "bpfman-operator",
+				"app.kubernetes.io/managed-by": "bpfman-operator",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: corev1.ClusterIPNone,
+			Ports: []corev1.ServicePort{{
+				Name:       "https-metrics",
+				Port:       8443,
+				Protocol:   corev1.ProtocolTCP,
+				TargetPort: intstr.FromString("https-metrics"),
+			}},
+			Selector: map[string]string{
+				"name": "bpfman-metrics-proxy",
+			},
+		},
+	}
+
+	controllerSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      internal.BpfmanControllerMetricsServiceName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"control-plane":                "controller-manager",
+				"app.kubernetes.io/name":       "service",
+				"app.kubernetes.io/instance":   "controller-manager-metrics-service",
+				"app.kubernetes.io/component":  "metrics",
+				"app.kubernetes.io/created-by": "bpfman-operator",
+				"app.kubernetes.io/part-of":    "bpfman-operator",
+				"app.kubernetes.io/managed-by": "bpfman-operator",
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{
+				Name:       "https-metrics",
+				Port:       8443,
+				Protocol:   corev1.ProtocolTCP,
+				TargetPort: intstr.FromString("https-metrics"),
+			}},
+			Selector: map[string]string{
+				"control-plane": "controller-manager",
+			},
+		},
+	}
+
+	needsUpdateFn := func(existing, desired *corev1.Service) bool {
+		// Preserve immutable fields that the API server sets on
+		// creation so that the subsequent Update call does not
+		// attempt to clear them.
+		desired.Spec.ClusterIP = existing.Spec.ClusterIP
+		desired.Spec.ClusterIPs = existing.Spec.ClusterIPs
+		return !equality.Semantic.DeepEqual(existing.Spec.Ports, desired.Spec.Ports) ||
+			!equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector)
+	}
+
+	if err := assureResource(ctx, r, bpfmanConfig, agentSvc, needsUpdateFn); err != nil {
+		return err
+	}
+	return assureResource(ctx, r, bpfmanConfig, controllerSvc, needsUpdateFn)
 }
 
 func (r *BpfmanConfigReconciler) reconcileServiceMonitors(ctx context.Context, bpfmanConfig *v1alpha1.Config) error {
@@ -505,7 +597,7 @@ func (r *BpfmanConfigReconciler) reconcileAgentMetricsServiceAnnotation(ctx cont
 	ns := bpfmanConfig.Spec.Namespace
 	svc := &corev1.Service{}
 	if err := r.Client.Get(ctx, types.NamespacedName{
-		Name:      "bpfman-agent-metrics-service",
+		Name:      internal.BpfmanAgentMetricsServiceName,
 		Namespace: ns,
 	}, svc); err != nil {
 		if errors.IsNotFound(err) {
@@ -838,7 +930,8 @@ func assureResource[T client.Object](ctx context.Context, r *BpfmanConfigReconci
 		return err
 	}
 
-	if needsUpdate(existingResource, resource) {
+	if needsUpdate(existingResource, resource) ||
+		!equality.Semantic.DeepEqual(existingResource.GetOwnerReferences(), resource.GetOwnerReferences()) {
 		r.Logger.Info("Updating object",
 			"type", resource.GetObjectKind(), "namespace", resource.GetNamespace(), "name", resource.GetName())
 		resource.SetResourceVersion(existingResource.GetResourceVersion())
