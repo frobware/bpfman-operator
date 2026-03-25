@@ -26,6 +26,7 @@ import (
 	"github.com/bpfman/bpfman-operator/internal"
 	bpfmanHelpers "github.com/bpfman/bpfman-operator/pkg/helpers"
 	osv1 "github.com/openshift/api/security/v1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -124,6 +125,30 @@ func managedObjects() []client.Object {
 				Namespace: internal.BpfmanNamespace,
 			},
 		})
+		objects = append(objects, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      internal.BpfmanAgentMetricsServiceName,
+				Namespace: internal.BpfmanNamespace,
+			},
+		})
+		objects = append(objects, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      internal.BpfmanControllerMetricsServiceName,
+				Namespace: internal.BpfmanNamespace,
+			},
+		})
+		objects = append(objects, &monitoringv1.ServiceMonitor{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      internal.BpfmanAgentServiceMonitorName,
+				Namespace: internal.BpfmanNamespace,
+			},
+		})
+		objects = append(objects, &monitoringv1.ServiceMonitor{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      internal.BpfmanControllerServiceMonitorName,
+				Namespace: internal.BpfmanNamespace,
+			},
+		})
 	}
 	if isOpenShift {
 		objects = append(objects, &osv1.SecurityContextConstraints{
@@ -187,6 +212,9 @@ func TestLifecycle(t *testing.T) {
 	// Add OpenShift scheme if needed.
 	if isOpenShift {
 		utilruntime.Must(osv1.Install(scheme))
+	}
+	if hasMonitoring {
+		utilruntime.Must(monitoringv1.AddToScheme(scheme))
 	}
 
 	// Create controller-runtime client.

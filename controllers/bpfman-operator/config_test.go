@@ -1434,10 +1434,31 @@ func TestAdoptExistingResources(t *testing.T) {
 			key: types.NamespacedName{Name: internal.BpfmanPrometheusClusterRoleBindingName},
 		},
 		{
+			// Populate the full spec so that needsUpdate returns
+			// false and only the missing ownerRef triggers the
+			// update -- the exact failure mode behind P2.
 			name: "agent ServiceMonitor",
 			obj: &monitoringv1.ServiceMonitor{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: internal.BpfmanAgentServiceMonitorName, Namespace: ns,
+				},
+				Spec: monitoringv1.ServiceMonitorSpec{
+					Endpoints: []monitoringv1.Endpoint{{
+						Path:            "/agent-metrics",
+						Port:            "https-metrics",
+						Scheme:          ptr.To(monitoringv1.Scheme("https")),
+						BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+						HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+							HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+								TLSConfig: serviceMonitorTLSConfig(true, "bpfman-agent-metrics-service", ns),
+							},
+						},
+					}},
+					Selector: metav1.LabelSelector{MatchLabels: map[string]string{
+						"app.kubernetes.io/component": "metrics",
+						"app.kubernetes.io/instance":  "agent-metrics-service",
+						"app.kubernetes.io/name":      "agent-metrics-service",
+					}},
 				},
 			},
 			key: types.NamespacedName{Name: internal.BpfmanAgentServiceMonitorName, Namespace: ns},
@@ -1447,6 +1468,26 @@ func TestAdoptExistingResources(t *testing.T) {
 			obj: &monitoringv1.ServiceMonitor{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: internal.BpfmanControllerServiceMonitorName, Namespace: ns,
+				},
+				Spec: monitoringv1.ServiceMonitorSpec{
+					Endpoints: []monitoringv1.Endpoint{{
+						Path:            "/metrics",
+						Port:            "https-metrics",
+						Scheme:          ptr.To(monitoringv1.Scheme("https")),
+						BearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+						HTTPConfigWithProxyAndTLSFiles: monitoringv1.HTTPConfigWithProxyAndTLSFiles{
+							HTTPConfigWithTLSFiles: monitoringv1.HTTPConfigWithTLSFiles{
+								TLSConfig: &monitoringv1.TLSConfig{
+									SafeTLSConfig: monitoringv1.SafeTLSConfig{
+										InsecureSkipVerify: ptr.To(true),
+									},
+								},
+							},
+						},
+					}},
+					Selector: metav1.LabelSelector{MatchLabels: map[string]string{
+						"control-plane": "controller-manager",
+					}},
 				},
 			},
 			key: types.NamespacedName{Name: internal.BpfmanControllerServiceMonitorName, Namespace: ns},
