@@ -78,7 +78,7 @@ spec:
             - name: BPFMAN_IMG
               value: quay.io/bpfman/bpfman:latest
             - name: BPFMAN_AGENT_IMG
-              value: quay.int.frobware.com/amcdermo/bpfman-agent:latest
+              value: quay.io/bpfman/bpfman-agent:latest
           name: bpfman-operator
           securityContext:
             allowPrivilegeEscalation: false

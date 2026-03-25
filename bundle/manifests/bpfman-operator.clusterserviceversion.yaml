@@ -1592,8 +1592,8 @@ spec:
                 - name: BPFMAN_IMG
                   value: quay.io/bpfman/bpfman:latest
                 - name: BPFMAN_AGENT_IMG
-                  value: quay.int.frobware.com/amcdermo/bpfman-agent:latest
-                image: quay.int.frobware.com/amcdermo/bpfman-operator:latest
+                  value: quay.io/bpfman/bpfman-agent:latest
+                image: quay.io/bpfman/bpfman-operator:latest
                 imagePullPolicy: IfNotPresent
                 livenessProbe:
                   httpGet:
