@@ -286,8 +286,8 @@ test: fmt ## Run Unit tests.
 
 
 .PHONY: test-integration
-test-integration: patch-image-references ## Run Integration tests.
-	GOFLAGS="-tags=integration_tests" go test -count=1 -race -v ./test/integration/...
+test-integration: patch-image-references $(KIND) ## Run Integration tests.
+	PATH="$(abspath $(LOCALBIN)):$$PATH" GOFLAGS="-tags=integration_tests" go test -count=1 -race -v ./test/integration/...
 
 .PHONY: test-integration-local
 test-integration-local: ## Run Integration tests against existing deployment. Use TEST= to specify test pattern.
